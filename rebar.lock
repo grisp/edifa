@@ -1,0 +1,8 @@
+{"1.2.0",
+[{<<"erlexec">>,{pkg,<<"erlexec">>,<<"2.0.7">>},0}]}.
+[
+{pkg_hash,[
+ {<<"erlexec">>, <<"76D0BC7487929741B5BB9F74DA2AF5DAF1492134733CF9A05C7AAA278B6934C5">>}]},
+{pkg_hash_ext,[
+ {<<"erlexec">>, <<"AF2DD940BB8E32F5AA40A65CB455DCAA18F5334FD3507E9BFD14A021E9630897">>}]}
+].
