@@ -24,11 +24,13 @@
 %--- API Functions -------------------------------------------------------------
 
 init(Opts) ->
-    {ok, #{temp_dir => maps:get(temp_dir, Opts, undefined)},
-     [id, rm, mktemp, mkdir, dd, sfdisk, fusefat, fusermount, {mkvfat, "mkfs.vfat"}]}.
+    {ok, State, Commands} = edifa_generic:init(Opts),
+    {ok, State#{temp_dir => maps:get(temp_dir, Opts, undefined)},
+        [id, mktemp, sfdisk, fusefat, fusermount, {mkvfat, "mkfs.vfat"}
+         | Commands]}.
 
 terminate(State, _Reason) ->
-    cleanup_commands(State).
+    edifa_exec:command(State, cmd_cleanup(State)).
 
 create(State, Filename, Size, Opts) ->
     edifa_generic:create(State, Filename, Size, Opts).
@@ -98,10 +100,10 @@ format(State = #{image_filename := ImageFile, partitions := PartMap},
             end ++ ["-S", integer_to_list(SecSize),
                     "-C", PartFile, integer_to_list(BlockSize)],
             edifa_exec:command(State, [
-                #{cmd => rm, args => ["-f", PartFile]},
+                edifa_generic:cmd_rm(true, PartFile),
                 #{cmd => mkvfat, args => Args},
-                edifa_generic:copy_command(PartFile, ImageFile,
-                    #{count => Size, seek => Start}),
+                edifa_generic:cmd_dd(PartFile, ImageFile,
+                                     #{count => Size, seek => Start}),
                 fun(State2, undefined) ->
                     #{partitions := #{PartId := OldInfo} = Parts} = State2,
                     NewInfo = OldInfo#{format => fat},
@@ -132,10 +134,10 @@ mount(State = #{image_filename := ImageFile, partitions := PartMap,
                 GIdStr = integer_to_list(GId),
                 IdOpts = "uid=" ++ UIdStr ++ ",gid=" ++ GIdStr,
                 edifa_exec:command(State2, [
-                    #{cmd => mkdir, args => ["-p", MountPoint]},
-                    #{cmd => rm, args => ["-f", PartFile]},
-                    edifa_generic:copy_command(ImageFile, PartFile,
-                        #{count => Size, skip => Start}),
+                    edifa_generic:cmd_mkdir(MountPoint),
+                    edifa_generic:cmd_rm(true, PartFile),
+                    edifa_generic:cmd_dd(ImageFile, PartFile,
+                                         #{count => Size, skip => Start}),
                     #{
                         cmd => fusefat,
                         args => [
@@ -165,9 +167,9 @@ unmount(State = #{image_filename := ImageFile, partitions := PartMap},
                filepath := PartFile, mount_point := MountPoint}} ->
             retry_unmount(State, MountPoint, 5, 1000, fun(State2, _) ->
                 edifa_exec:command(State2, [
-                    edifa_generic:copy_command(PartFile, ImageFile,
-                            #{count => Size, seek => Start}),
-                    #{cmd => rm, args => ["-f", PartFile]},
+                    edifa_generic:cmd_dd(PartFile, ImageFile,
+                                         #{count => Size, seek => Start}),
+                    edifa_generic:cmd_rm(true, PartFile),
                     fun(State3, _) ->
                         #{partitions := #{PartId := OldInfo} = Parts} = State3,
                         NewInfo = OldInfo#{mount_point => undefined},
@@ -186,31 +188,33 @@ extract(State, From, To, Filename) ->
 
 %--- Internal Functions --------------------------------------------------------
 
-cleanup_commands(State) ->
-    RevCmds = cleanup_temp_dir(State, cleanup_partitions(State, [])),
-    edifa_exec:command(State, lists:reverse(RevCmds)).
+cmd_cleanup(State) ->
+    cmd_cleanup_partitions(State)
+        ++ cmd_cleanup_temp_dir(State)
+        ++ edifa_generic:cmd_cleanup(State).
 
-cleanup_partitions(#{partitions := PartMap}, Acc) ->
-    cleanup_partitions(maps:values(PartMap), Acc);
-cleanup_partitions(#{}, Acc) ->
-    Acc;
-cleanup_partitions([], Acc) ->
-    Acc;
-cleanup_partitions([#{filepath := F, mount_point := M} | Rest], Acc)
+cmd_cleanup_partitions(#{partitions := PartMap}) ->
+    cmd_cleanup_partitions(maps:values(PartMap), []);
+cmd_cleanup_partitions(#{}) ->
+    [].
+
+cmd_cleanup_partitions([], Acc) ->
+    lists:reverse(Acc);
+cmd_cleanup_partitions([#{filepath := F, mount_point := M} | Rest], Acc)
   when F =/= undefined, M =/= undefined ->
-    cleanup_partitions(Rest, [
+    cmd_cleanup_partitions(Rest, [
         #{cmd => fusermount, args => ["-u", M]},
-        #{cmd => rm, args => ["-f", F]} | Acc]);
-cleanup_partitions([#{filepath := F} | Rest], Acc)
+        edifa_generic:cmd_rm(true, F) | Acc]);
+cmd_cleanup_partitions([#{filepath := F} | Rest], Acc)
   when F =/= undefined ->
-    cleanup_partitions(Rest, [#{cmd => rm, args => ["-f", F]} | Acc]);
-cleanup_partitions([#{} | Rest], Acc) ->
-    cleanup_partitions(Rest, Acc).
+    cmd_cleanup_partitions(Rest, [edifa_generic:cmd_rm(true, F) | Acc]);
+cmd_cleanup_partitions([#{} | Rest], Acc) ->
+    cmd_cleanup_partitions(Rest, Acc).
 
-cleanup_temp_dir(#{temp_dir_cleanup := true, temp_dir := TempDir}, Acc) ->
-    [#{cmd => rm, args => ["-rf", TempDir]} | Acc];
-cleanup_temp_dir(_State, Acc) ->
-    Acc.
+cmd_cleanup_temp_dir(#{temp_dir_cleanup := true, temp_dir := TempDir}) ->
+    [edifa_generic:cmd_rm(true, true, TempDir)];
+cmd_cleanup_temp_dir(_State) ->
+    [].
 
 with_temp_dir(State = #{temp_dir := undefined}, Fun) ->
     edifa_exec:command(State, [

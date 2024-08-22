@@ -2,6 +2,9 @@
 
 Erlang Disk and Image File Abstraction Library
 
+Library to create system images without root privilege on both Linux and MacOS.
+
+
 ## Build
 
     $ rebar3 compile
@@ -13,6 +16,7 @@ Erlang Disk and Image File Abstraction Library
 
 Commands that must be available:
 
+ - rm
  - mkdir
  - dd
  - hdiutil
@@ -25,11 +29,11 @@ Commands that must be available:
 
 Commands that must be available:
 
- - id
  - rm
- - mktemp
  - mkdir
  - dd
+ - id
+ - mktemp
  - sfdisk
  - fusefat
  - fusermount
@@ -44,49 +48,72 @@ Install dependencies:
 
 Create an image file (64 MiB):
 
-    {ok, Img} = edifa:create("test.img", 64 * 1024 * 1024).
+```erlang
+{ok, Img} = edifa:create("test.img", 64 * 1024 * 1024).
+```
 
 Write some bootloader (2 MiB):
 
-    ok = edifa:write(Img, "bootloader.bin", #{count => 2 * 1024 * 1024}).
+```erlang
+ok = edifa:write(Img, "bootloader.bin", #{count => 2 * 1024 * 1024}).
+```
 
 Create partitions:
 
-    {ok, P1, P2} = edifa:partition(Img, mbr, [
-        #{type => fat32, size => 31 * 1024 * 1024, start => 2 * 1024 * 1024},
-        #{type => fat32, size => 31 * 1024 * 1024}
-    ]).
+```erlang
+{ok, P1, P2} = edifa:partition(Img, mbr, [
+    #{type => fat32, size => 31 * 1024 * 1024, start => 2 * 1024 * 1024},
+    #{type => fat32, size => 31 * 1024 * 1024}
+]).
+```
 
 Format partition 1:
 
-    ok = edifa:format(Img, P1, fat, #{label => "foobar"}).
+```erlang
+ok = edifa:format(Img, P1, fat, #{label => "foobar"}).
+```
 
 Mount partition 1:
 
-    {ok, MountPoint} = edifa:mount(Img, P1).
+```erlang
+{ok, MountPoint} = edifa:mount(Img, P1).
+```
 
 Create some files in partition 1 filesystem:
 
-    ok = file:write_file(filename:join(MountPoint, "test.txt"), <<"some data\n">>).
+```erlang
+ok = file:write_file(filename:join(MountPoint, "test.txt"), <<"some data\n">>).
+```
 
 Unmount partition 1:
 
-    ok = edifa:unmount(Img, P1).
+```erlang
+ok = edifa:unmount(Img, P1).
+```
 
 Extract partition 1 into its own file:
 
-    ok = edifa:extract(Img, P1, "system.fs").
+```erlang
+ok = edifa:extract(Img, P1, "system.fs").
+```
 
 Generate a tuncated disk image containing the reserved space before the first
 partition with the bootloader and the partition definition, and partition 1:
 
-    ok = edifa:extract(Img, reserved, P1, "disk.img").
+```erlang
+ok = edifa:extract(Img, reserved, P1, "disk.img").
+```
 
 Close the image:
 
-    ok = edifa:close(Img).
+```erlang
+ok = edifa:close(Img).
+```
 
 
 ## Limitations
 
-All partitions involved must be unmounted before extracting data.
+ - All partitions involved must be unmounted before extracting data.
+ - Only support MBR partition tables for now.
+ - Active/Bootable partition flag is not supported yet.
+ - Only support FAT filesystem for now.

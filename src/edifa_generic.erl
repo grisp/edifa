@@ -4,12 +4,27 @@
 %--- Exports -------------------------------------------------------------------
 
 % API functions
+-export([init/1]).
 -export([create/4]).
 -export([write/3]).
 -export([extract/4]).
 
-% Helper functions
--export([copy_command/3]).
+% Helper command functions
+-export([cmd_cleanup/1]).
+-export([cmd_mkdir/1]).
+-export([cmd_rm/2, cmd_rm/3]).
+-export([cmd_dd/3]).
+
+%--- Types ---------------------------------------------------------------------
+
+-type dd_options() :: #{
+    % The number of bytes to write.
+    count => pos_integer(),
+    % The number of bytes to skip in the input file.
+    skip => pos_integer(),
+    % The offset in the output file where to start writing.
+    seek => pos_integer()
+}.
 
 
 %--- Macros --------------------------------------------------------------------
@@ -20,6 +35,9 @@
 
 %--- API Functions -------------------------------------------------------------
 
+init(_Opts) ->
+    {ok, #{}, [rm, mkdir, dd]}.
+
 create(#{image_filename := CurrFilename}, _Filename, _Size, _Opts) ->
     {error, ?FMT("Image file already created: ~s", [CurrFilename])};
 create(State, Filename, Size, Opts) ->
@@ -27,7 +45,7 @@ create(State, Filename, Size, Opts) ->
     MaxBlockSize = maps:get(max_block_size, Opts, ?MAX_BLOCK_SIZE),
     BlockSize = block_size([Size], MaxBlockSize),
     edifa_exec:command(State#{image_filename => FilenameBin}, [
-        #{cmd => mkdir, args => ["-p", filename:dirname(FilenameBin)]},
+        cmd_mkdir(filename:dirname(FilenameBin)),
         #{cmd => dd, args => [
             "conv=sparse,notrunc",
             "if=/dev/zero",
@@ -38,7 +56,7 @@ create(State, Filename, Size, Opts) ->
     ]).
 
 write(#{image_filename := OutFilename} = State, InFilename, Opts) ->
-    edifa_exec:command(State, copy_command(InFilename, OutFilename, Opts));
+    edifa_exec:command(State, cmd_dd(InFilename, OutFilename, Opts));
 write(_State, _InFilename, _Opts) ->
     {error, <<"No image file created">>}.
 
@@ -48,24 +66,61 @@ extract(#{image_filename := InFilename} = State, From, To, OutFilename) ->
         {ok, Start, Size} ->
             Opts = #{skip => Start, count => Size},
             edifa_exec:command(State, [
-                #{cmd => mkdir, args => ["-p", filename:dirname(OutFilename)]},
-                copy_command(InFilename, OutFilename, Opts)
+                cmd_mkdir(filename:dirname(OutFilename)),
+                cmd_dd(InFilename, OutFilename, Opts)
             ])
     end;
 extract(_State, _From, _To, _OutputFile) ->
     {error, <<"No image file created">>}.
 
-copy_command(From, To, Opts) ->
+
+%--- Helper Command Functions --------------------------------------------------
+
+-spec cmd_cleanup(State :: term()) -> [edifa_exec:call_spec()].
+cmd_cleanup(#{image_filename := Filename}) ->
+    cmd_rm(true, Filename);
+cmd_cleanup(_State) ->
+    [].
+
+-spec cmd_mkdir(DirPath :: string() | binary()) ->
+    [edifa_exec:call_spec()].
+cmd_mkdir(DirPath) ->
+    [#{cmd => mkdir, args => ["-p", DirPath]}].
+
+-spec cmd_rm(Force :: boolean(), Path :: string() | binary()) ->
+    [edifa_exec:call_spec()].
+cmd_rm(true, FilePath) ->
+    [#{cmd => rm, args => ["-f", FilePath]}];
+cmd_rm(false, FilePath) ->
+    [#{cmd => rm, args => [FilePath]}].
+
+-spec cmd_rm(Force :: boolean(), Recursive :: boolean(),
+             Path :: string() | binary()) ->
+    [edifa_exec:call_spec()].
+cmd_rm(true, true, FilePath) ->
+    [#{cmd => rm, args => ["-rf", FilePath]}];
+cmd_rm(true, false, FilePath) ->
+    [#{cmd => rm, args => ["-f", FilePath]}];
+cmd_rm(false, true, FilePath) ->
+    [#{cmd => rm, args => ["-r", FilePath]}];
+cmd_rm(false, false, FilePath) ->
+    [#{cmd => rm, args => [FilePath]}].
+
+-spec cmd_dd(InoputFile :: string() | binary(),
+             OutputFile :: string() | binary(),
+             Options :: dd_options()) ->
+    [edifa_exec:call_spec()].
+cmd_dd(From, To, Opts) ->
     FromFilename = unicode:characters_to_list(iolist_to_binary(From)),
     ToFilename = unicode:characters_to_list(iolist_to_binary(To)),
-    #{
+    [#{
         cmd => dd,
         args => [
             "conv=sparse,notrunc",
             "if=" ++ FromFilename,
             "of=" ++ ToFilename
             ] ++ dd_block_opts(Opts)
-    }.
+    }].
 
 %--- Internal Functions --------------------------------------------------------
 

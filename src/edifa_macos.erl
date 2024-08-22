@@ -29,11 +29,12 @@
 
 %--- API Functions -------------------------------------------------------------
 
-init(_Opts) ->
-    {ok, #{}, [mkdir, hdiutil, dd, fdisk, diskutil, newfs_msdos]}.
+init(Opts) ->
+    {ok, State, Commands} = edifa_generic:init(Opts),
+    {ok, State, [hdiutil, fdisk, diskutil, newfs_msdos | Commands]}.
 
 terminate(State, _Reason) ->
-    cleanup_commands(State).
+    edifa_exec:command(State, cmd_cleanup(State)).
 
 create(State, Filename, Size, Opts) ->
     edifa_generic:create(State, Filename, Size, Opts).
@@ -53,7 +54,7 @@ partition(State, mbr, Specs) ->
                 args => ["-ry", ImageDevice],
                 input => [PartitionSpecs, eof]
             },
-            call_diskutil_list(ImageDevice),
+            cmd_diskutil_list(ImageDevice),
             fun(State3, DiskInfo) ->
                 try
                     #{partitions := DiskUtilPartitions} = DiskInfo,
@@ -128,7 +129,8 @@ format(State = #{partitions := PartMap}, PartId, fat, Opts) ->
 format(_State, _PartId, _FileSystem, _Opts) ->
     {error, <<"No partition table defined">>}.
 
-mount(State = #{image_device := ImageDevice, partitions := PartMap}, PartId, Opts) ->
+mount(State = #{image_device := ImageDevice, partitions := PartMap},
+      PartId, Opts) ->
     case maps:find(PartId, PartMap) of
         error ->
             {error, ?FMT("Unknown partition ~s", [PartId])};
@@ -140,7 +142,7 @@ mount(State = #{image_device := ImageDevice, partitions := PartMap}, PartId, Opt
                 case maps:find(mount_point, Opts) of
                     {ok, MountPoint} when MountPoint =/= undefined ->
                         [
-                            #{cmd => mkdir, args => ["-p", MountPoint]},
+                            edifa_generic:cmd_mkdir(MountPoint),
                             #{
                                 cmd => diskutil,
                                 args => [
@@ -157,9 +159,8 @@ mount(State = #{image_device := ImageDevice, partitions := PartMap}, PartId, Opt
                                 args => ["mount", DeviceFile]
                             }
                         ]
-                end
-                ++
-                call_diskutil_list(ImageDevice),
+                end,
+                cmd_diskutil_list(ImageDevice),
                 fun(State2, #{partitions := InfoList}) ->
                     InfoMap = maps:from_list([{I, M} || M = #{id := I} <- InfoList]),
                     case InfoMap of
@@ -205,14 +206,14 @@ extract(State, From, To, Filename) ->
 
 %--- Internal Functions --------------------------------------------------------
 
-cleanup_commands(State) ->
-    RevCmds = cleanup_image_device(State, []),
-    edifa_exec:command(State, lists:reverse(RevCmds)).
+cmd_cleanup(State) ->
+    cmd_cleanup_image_device(State)
+        ++ edifa_generic:cmd_cleanup(State).
 
-cleanup_image_device(#{image_device := ImageDevice}, Acc) ->
-    [#{cmd => hdiutil, args => ["detach", ImageDevice]} | Acc];
-cleanup_image_device(_State, Acc) ->
-    Acc.
+cmd_cleanup_image_device(#{image_device := ImageDevice}) ->
+    [#{cmd => hdiutil, args => ["detach", ImageDevice]}];
+cmd_cleanup_image_device(_State) ->
+    [].
 
 with_image_device(State = #{image_device := ImageDevice}, Fun) ->
     Fun(State, ImageDevice);
@@ -230,7 +231,7 @@ with_image_device(State = #{image_filename := ImageFilename}, Fun) ->
 with_image_device(_State, _Fun) ->
     {error, <<"No image created">>}.
 
-call_diskutil_list(DiskDevice) ->
+cmd_diskutil_list(DiskDevice) ->
     [
         #{
             cmd => diskutil,

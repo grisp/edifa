@@ -1,4 +1,19 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Command execution helper module.
+%%
+%% Uses erlexec to run the commands, and add a layer to chain commands with
+%% lambda functions, parse result and errors and handle input data.
+%%
+%% Started as a process with a callback module so if the caller process dies
+%% it is possible to cleanup any external state by calling some more commands.
+%%
+%% All possible commands are checked for during the callbakc module
+%% initialization to ensure there is no error due to missing command
+%% in the middle of an operation.
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 -module(edifa_exec).
+
 
 %--- Exports -------------------------------------------------------------------
 
@@ -13,6 +28,7 @@
 %--- Macros --------------------------------------------------------------------
 
 -define(MAX_LINE_SIZE, 1024).
+-define(FMT(F, A), iolist_to_binary(io_lib:format(F, A))).
 
 
 %--- Types ---------------------------------------------------------------------
@@ -23,7 +39,7 @@
     exec_pid :: pid(),
     mod :: module(),
     sub :: term(),
-    cmd_paths = #{} :: #{atom() => binary()},
+    cmd_paths = #{} :: #{atom() => {binary(), binary()}},
     stdout_buffer = <<>> :: binary(),
     stderr_buffer = <<>> :: binary(),
     log_handler :: undefined | log_handler()
@@ -68,6 +84,9 @@
 -type data_handler() :: fun((State :: term(), command_output()) ->
     continue_return() | ok_return() | call_return() | error_return()).
 
+-type exit_handler() :: fun((State :: term(), command_exit()) ->
+    ok_return() | call_return() | error_return()).
+
 -type command_message() :: {start, LastResult :: term()}
                          | command_output()
                          | command_exit()
@@ -78,9 +97,6 @@
 -type simple_command_handler() :: fun((State :: term(), LastResult :: term()) ->
     ok_return() | call_return() | error_return()).
 -type command_handler() :: full_command_handler() | simple_command_handler().
-
--type exit_handler() :: fun((State :: term(), command_exit()) ->
-    ok_return() | call_return() | error_return()).
 
 -type call_spec() :: #{
     % The command tag to call, must have been returned from the init callback.
@@ -111,31 +127,46 @@
     % start handler. Not used when specifying an explicit on_start handler.
     input => undefined | command_input_data(),
     % Define how the result should be extracted from the command output
-    % by the default data handler. Not used when specifying an explicit on_data
-    % handler, and an explicit on_exit handler would have to get the result
-    % from the state key `result` and return it explicitly.
+    % by the default data handler.
+    %   `{match, Regexp}` :
+    %     Each stout and stderr output lines are matched with the regular
+    %     expression, if it match without any capture, the result is set to
+    %     `true`, if a single value is captured the result is set to it,
+    %     and if multiple values are captured, the result is set to the list.
+    %   `{match, Regex, ReOpts}` :
+    %     Same as before, but the given options are used to compile the
+    %     regular expression, and to match the data.
+    %   `{match, Regex, ReOpts, Fun}` :
+    %     Same as before, but the captured values (or true, if there is none)
+    %     are passed as parameter to the function to figure out the result.
+    %   `{collect, Stream}` :
+    %     All the lines from given stream are collected in a list as the result.
     result => undefined
-            | {default, term()}
             | {match, iodata() | unicode:charlist()}
             | {match, iodata() | unicode:charlist(), re:options()}
             | {match, iodata() | unicode:charlist(), re:options(), fun((list()) -> term())}
             | {collect, stdout | stderr | both},
+    % Define what the result should be if the command exit status was 0 but no
+    % result value was extracted.
+    result_default => undefined,
     % If not undefined, there is a result key in the state, and the command
     % exit with status 0, the result will be kept under the specified key in
-    % the state. Not used when specifying an explicit exit handler.
+    % the state.
     keep_result => undefined | atom(),
-    % If true, the command will always succeed, and the result will be
-    % `{error, Reason}` if an error happen. Default: false.
-    error_as_result => undefined | boolean(),
     % Define how the error should be extracted from the command output
-    % by the default data handler. Not used when specifying an explicit on_data
-    % handler, and an explicit on_exit handler would have to get the result
-    % from the state key `error` and return it explicitly.
+    % by the default data handler. See the `result` parameter for
+    % a description of the possible parameters.
     error => undefined
-            | {default, term()}
             | {match, iodata() | unicode:charlist()}
             | {match, iodata() | unicode:charlist(), re:options()}
             | {match, iodata() | unicode:charlist(), re:options(), fun((list()) -> term())}
+            | {collect, stdout | stderr | both},
+    % Define what the error should be if the command exit status was not 0 but
+    % no error value was extracted.
+    error_default => undefined,
+    % If true, the command will always succeed, and the result will be
+    % `{error, Reason}` if an error happen. Default: false.
+    error_as_result => undefined | boolean()
 }.
 
 -export_type([log_handler/0, call_spec/0]).
@@ -192,18 +223,30 @@ command(State, CmdSpecs) when is_list(CmdSpecs) ->
 
 find_executables([], Map) ->
     {ok, Map};
-find_executables([Tag | Rest], Map) when is_atom(Tag) ->
-    find_executables([{Tag, Tag} | Rest], Map);
-find_executables([{Tag, Name} | Rest], Map) when is_atom(Tag) ->
-    case os:find_executable(Name) of
-        false -> {error, {command_not_found, Name}};
-        Path -> find_executables(Rest, Map#{Tag => iolist_to_binary(Path)})
+find_executables([Tag | Rest], Map)
+  when is_atom(Tag) ->
+    find_executables([{Tag, atom_to_binary(Tag)} | Rest], Map);
+find_executables([{Tag, Name} | Rest], Map)
+  when is_atom(Tag), is_list(Name) ->
+    find_executables([{Tag, list_to_binary(Name)} | Rest], Map);
+find_executables([{Tag, Name} | Rest], Map)
+  when is_atom(Tag), is_binary(Name) ->
+    case os:find_executable(binary_to_list(Name)) of
+        false -> {error, ?FMT("command ~s not_found", [Name])};
+        Path ->
+            CmdInfo = {iolist_to_binary(Name), iolist_to_binary(Path)},
+            find_executables(Rest, Map#{Tag => CmdInfo})
     end.
 
--spec cmd_path(state(), any()) -> binary().
+-spec cmd_path(state(), atom()) -> binary().
 cmd_path(#state{cmd_paths = Paths}, Tag) ->
-    #{Tag := Path} = Paths,
+    #{Tag := {_, Path}} = Paths,
     Path.
+
+-spec cmd_name(state(), atom()) -> binary().
+cmd_name(#state{cmd_paths = Paths}, Tag) ->
+    #{Tag := {Name, _}} = Paths,
+    Name.
 
 call_proc(Pid, Action, Args) ->
     CallRef = make_ref(),
@@ -291,6 +334,7 @@ proc_reply({CallRef, Pid}, State, {call, CallSpecs, LastResult, NewSub}) ->
             proc_loop(NewState)
     end.
 
+% Terminate after executing all the terminating commands.
 proc_terminate(#state{mod = Mod, sub = Sub} = State, Reason) ->
     State2 = State#state{terminating = true},
     case Mod:terminate(Sub, Reason) of
@@ -305,6 +349,8 @@ proc_terminate(#state{mod = Mod, sub = Sub} = State, Reason) ->
             end
     end.
 
+% Execute a call specification with its associated call handler, creating
+% a default one if needed, or call an explicit handler function.
 proc_command(State, [Handler | NextCalls], LastResult)
   when is_function(Handler) ->
     proc_command_start(State, undefined, undefined,
@@ -358,6 +404,7 @@ validate_cmd_input(L) when is_list(L) ->
             {split_data(iolist_to_binary(L)), false}
     end.
 
+% Convert an exec exit status to an event
 proc_cmd_status(normal) ->
     {exit, {status, 0}};
 proc_cmd_status({exit_status, Status}) ->
@@ -368,13 +415,36 @@ proc_cmd_status({exit_status, Status}) ->
 proc_cmd_status(Other) ->
     {exit, {down, Other}}.
 
+% Split stream data into line events. The data includs the final '\n',
+% up to a maximum line size defined by macro MAX_LINE_SIZE.
+% Data without leading '\n' is buffered for later, and flush_stream_data/1
+% should be called to get all the missing data.
 split_stream_data(State = #state{stdout_buffer = Buff}, stdout, Data) ->
     {Lines, NewBuff} = split_data(<<Buff/binary, Data/binary>>, ?MAX_LINE_SIZE),
-    {Lines, State#state{stdout_buffer = NewBuff}};
+    {[{stdout, D} || D <- Lines], State#state{stdout_buffer = NewBuff}};
 split_stream_data(State = #state{stderr_buffer = Buff}, stderr, Data) ->
     {Lines, NewBuff} = split_data(<<Buff/binary, Data/binary>>, ?MAX_LINE_SIZE),
-    {Lines, State#state{stderr_buffer = NewBuff}}.
+    {[{stderr, D} || D <- Lines], State#state{stderr_buffer = NewBuff}}.
 
+% Retrieve any data events that was buffered because the data wasn't a full line.
+flush_stream_data(State) ->
+    flush_stream_data(State, [stdout, stderr], []).
+
+flush_stream_data(State, [], Acc) ->
+    {lists:reverse(Acc), State};
+flush_stream_data(State = #state{stdout_buffer = <<>>}, [stdout | Rest], Acc) ->
+    flush_stream_data(State, Rest, Acc);
+flush_stream_data(State = #state{stdout_buffer = Data}, [stdout | Rest], Acc) ->
+    State2 = State#state{stdout_buffer = <<>>},
+    flush_stream_data(State2, Rest, [{stdout, Data} | Acc]);
+flush_stream_data(State = #state{stderr_buffer = <<>>}, [stderr | Rest], Acc) ->
+    flush_stream_data(State, Rest, Acc);
+flush_stream_data(State = #state{stderr_buffer = Data}, [stderr | Rest], Acc) ->
+    State2 = State#state{stderr_buffer = <<>>},
+    flush_stream_data(State2, Rest, [{stderr, Data} | Acc]).
+
+% Split a binary in lines ending with '\n' (included), or with a maximum size
+% defined by macro MAX_LINE_SIZE.
 split_data(B) when is_binary(B) ->
     case split_data(B, ?MAX_LINE_SIZE) of
         {Lines, <<>>} -> Lines;
@@ -400,6 +470,7 @@ split_data(B, MaxLineSize, Acc) ->
             split_data(Rest, MaxLineSize, [Chunk | Acc])
     end.
 
+% Run a command using erlexec.
 proc_cmd_run(State, #{cmd := Cmd} = CallSpec) ->
     CmdPath = cmd_path(State, Cmd),
     Args = validate_cmd_args([CmdPath | maps:get(args, CallSpec, [])]),
@@ -412,6 +483,7 @@ proc_cmd_run(State, #{cmd := Cmd} = CallSpec) ->
             {ok, {Pid, OsPid}, proc_log(State, {exec, Args})}
     end.
 
+% Send input data to a running erlexec command.
 proc_cmd_send(State, _CallSpec, undefined, _Data) ->
     State;
 proc_cmd_send(State, _CallSpec, {_, OsPid}, Data) ->
@@ -427,6 +499,7 @@ proc_cmd_send(State, _CallSpec, {_, OsPid}, Data) ->
             proc_log(State2, {stdin, eof})
     end.
 
+% Terminate a running erlexec command.
 proc_cmd_close(State, undefined) ->
     State;
 proc_cmd_close(State, {Pid, _} = CallRef) ->
@@ -436,32 +509,17 @@ proc_cmd_close(State, {Pid, _} = CallRef) ->
             proc_cmd_close_consume(proc_log(State, closed), CallRef)
     end.
 
-proc_flush_stream_data(State) ->
-    proc_flush_stream_data(State, [stdout, stderr], []).
-
-proc_flush_stream_data(State, [], Acc) ->
-    {lists:reverse(Acc), State};
-proc_flush_stream_data(State = #state{stdout_buffer = <<>>}, [stdout | Rest], Acc) ->
-    proc_flush_stream_data(State, Rest, Acc);
-proc_flush_stream_data(State = #state{stdout_buffer = Data}, [stdout | Rest], Acc) ->
-    State2 = State#state{stdout_buffer = <<>>},
-    proc_flush_stream_data(State2, Rest, [{stdout, Data} | Acc]);
-proc_flush_stream_data(State = #state{stderr_buffer = <<>>}, [stderr | Rest], Acc) ->
-    proc_flush_stream_data(State, Rest, Acc);
-proc_flush_stream_data(State = #state{stderr_buffer = Data}, [stderr | Rest], Acc) ->
-    State2 = State#state{stderr_buffer = <<>>},
-    proc_flush_stream_data(State2, Rest, [{stderr, Data} | Acc]).
-
+% Consume events from a running erlexec command.
 proc_cmd_close_consume(State, {Pid, OsPid} = CallRef) ->
     receive
         {Stream, OsPid, Data} when Stream =:= stdout; Stream =:= stderr ->
-            {Lines, State2} = split_stream_data(State, Stream, Data),
-            State3 = lists:foldl(fun(L, S) ->
-                proc_log(S, {Stream, L})
-            end, State2, Lines),
+            {Events, State2} = split_stream_data(State, Stream, Data),
+            State3 = lists:foldl(fun(E, S) ->
+                proc_log(S, E)
+            end, State2, Events),
             proc_cmd_close_consume(State3, CallRef);
         {'DOWN', OsPid, process, Pid, Reason} ->
-            {Events, State2} = proc_flush_stream_data(State),
+            {Events, State2} = flush_stream_data(State),
             State3 = lists:foldl(fun(Event, S) ->
                 proc_log(S, Event)
             end, State2, Events),
@@ -473,6 +531,9 @@ proc_log(#state{log_handler = LogHandler} = State, Data) ->
     catch LogHandler(Data),
     State.
 
+% Start a call specification or a handler. If the handler is a simple handler
+% it will be called with the state and the last command result and considered
+% finished, otherwise it send the start event to the handler.
 proc_command_start(#state{sub = Sub} = State, _CallSpec, undefined,
                    Handler, NextCalls, LastResult)
   when is_function(Handler, 2) ->
@@ -490,6 +551,8 @@ proc_command_start(State, CallSpec, CallRef,
     proc_call_result_handler(State, CallSpec, CallRef, Handler,
                              NextCalls, [], {start, LastResult}).
 
+% Process the result of calling the call handler function when the command is
+% known to have terminated.
 process_handler_exit(State, {ok, NewSub}, _Handler, []) ->
     {ok, State#state{sub = NewSub}};
 process_handler_exit(State, {ok, Result, NewSub}, _Handler, []) ->
@@ -509,6 +572,8 @@ process_handler_exit(State, {ok, Result, NewSub}, _Handler, NextCalls) ->
     proc_log(State, {result, Result}),
     proc_command(State#state{sub = NewSub}, NextCalls, Result).
 
+% Process the result of calling the call handler function when the current
+% command is still running.
 process_handler_result(State, {continue, NewSub}, CallSpec, CallRef,
                        Handler, NextCalls, NextData) ->
     proc_command_consume(State#state{sub = NewSub},
@@ -545,6 +610,13 @@ process_handler_result(State, {ok, Result, NewSub}, _CallSpec, CallRef,
     proc_command(proc_cmd_close(State#state{sub = NewSub}, CallRef),
                  NextCalls, Result).
 
+% Consume data from the current command. When there is no pending events,
+% the function wait for messages from the erlexec command or other processes,
+% otherwise it process the events one by one by calling the call handler
+% function. This is done like this because a single messager can trigger
+% multiple calls to the handler function because the data is split line by line.
+% When terminating, we don't handle exit and terminate message to prevent
+% recursive termination.
 proc_command_consume(#state{terminating = Terminating, parent = Parent} = State,
                      CallSpec, {Pid, OsPid} = CallRef, Handler, NextCalls, []) ->
     receive
@@ -553,14 +625,13 @@ proc_command_consume(#state{terminating = Terminating, parent = Parent} = State,
         terminate when not Terminating ->
             proc_terminate(proc_cmd_close(State, CallRef), normal);
         {'DOWN', OsPid, process, Pid, Reason} ->
-            {DataEvents, State2} = proc_flush_stream_data(State),
+            {DataEvents, State2} = flush_stream_data(State),
             StatusEvent = proc_cmd_status(Reason),
             AllEvents = DataEvents ++ [StatusEvent],
             proc_command_consume(State2, CallSpec, undefined, Handler,
                                  NextCalls, AllEvents);
         {Stream, OsPid, Data} when Stream =:= stdout; Stream =:= stderr ->
-            {Lines, State2} = split_stream_data(State, Stream, Data),
-            DataEvents = [{Stream, D} || D <- Lines],
+            {DataEvents, State2} = split_stream_data(State, Stream, Data),
             proc_command_consume(State2, CallSpec, CallRef, Handler,
                                  NextCalls, DataEvents);
         OtherMsg ->
@@ -576,6 +647,8 @@ proc_command_consume(State, CallSpec, CallRef, Handler,
     proc_call_result_handler(State, CallSpec, CallRef,
                              Handler, NextCalls, Rest, Event).
 
+% Call the call handler function with give event and process the result
+% while the current command is still running.
 proc_call_result_handler(State = #state{sub = Sub}, CallSpec, CallRef,
                          Handler, NextCalls, NextEvents, Event) ->
     State2 = proc_log(State, Event),
@@ -589,6 +662,8 @@ proc_call_result_handler(State = #state{sub = Sub}, CallSpec, CallRef,
                                    Handler, NextCalls, NextEvents)
     end.
 
+% Call the call handler function with give event and process the result
+% while the current command is known to have terminated.
 proc_call_exit_handler(State = #state{sub = Sub}, CallSpec,
                        Handler, NextCalls, Event) ->
     State2 = proc_log(State, Event),
@@ -600,6 +675,12 @@ proc_call_exit_handler(State = #state{sub = Sub}, CallSpec,
             process_handler_exit(State2, {error, Reason}, Handler, NextCalls)
     end.
 
+% Make a call handler function if not specified explicitly in the call
+% specification. Handlers for startup, data event and exit events
+% can be overriden independently by the call specification.
+make_handler(_State, #{handler := Handler})
+  when is_function(Handler, 3) ->
+    Handler;
 make_handler(State, CallSpec) ->
     DefStartHandler = make_default_start_handler(State, CallSpec),
     StartHandler = maps:get(on_start, CallSpec, DefStartHandler),
@@ -607,8 +688,11 @@ make_handler(State, CallSpec) ->
     DataHandler = maps:get(on_data, CallSpec, DefDataHandler),
     DefExitHandler = make_default_exit_handler(State, CallSpec),
     ExitHandler = maps:get(on_exit, CallSpec, DefExitHandler),
-    make_messager_handler(StartHandler, DataHandler, ExitHandler).
+    make_call_handler(StartHandler, DataHandler, ExitHandler).
 
+% Make a default startup handler function.
+% It cleanup the state to be used with the other default handler function,
+% and send the command input data to the command if there is any.
 make_default_start_handler(_State, #{input := Input})
   when Input =:= undefined; Input =:= <<>> ->
     fun(Sub, _LastResult) -> {continue, maps:remove(result, Sub)} end;
@@ -617,6 +701,8 @@ make_default_start_handler(_State, #{input := Input}) ->
 make_default_start_handler(_State, _CallSpec) ->
     fun(Sub, _LastResult) -> {continue, maps:remove(result, Sub)} end.
 
+% Make a data extraction function from specification.
+% Used to set the result or error value from data stream events.
 make_data_extractor(Key, {collect, StreamSpec}, _Default) ->
     fun
         (Sub, {Stream, Data})
@@ -666,10 +752,16 @@ make_data_extractor(_Key, _Other, undefined) ->
 make_data_extractor(_Key, _Other, Default) ->
     make_data_extractor(_Key, Default, undefined).
 
+% Make default data handler function. It setup the data extractor for result
+% and error defined in the call specification.
+% If no error extractor is defined, it define a default one that match
+% for either "CMD_NAME: ERROR" or "CMD_PATH: ERROR",
+% for example "rm: invalid option" or "/bin/rm: invalid option".
 make_default_data_handler(State, #{cmd := Cmd} = CallSpec) ->
     CmdPath = cmd_path(State, Cmd),
-    CmdBin = atom_to_binary(Cmd),
-    DefaultErrorRegex = <<"^(?:", CmdBin/binary, ": |", (escape_regexp(CmdPath))/binary, ": )([^\n]*)">>,
+    CmdName = cmd_name(State, Cmd),
+    DefaultErrorRegex = <<"^(?:", (escape_regexp(CmdName))/binary, ": |",
+                          (escape_regexp(CmdPath))/binary, ": )([^\n]*)">>,
     DefaultErrorExtractor = {match, DefaultErrorRegex, [multiline, {capture, all_but_first, binary}]},
     Extractors = [
         make_data_extractor(result, maps:get(result, CallSpec, undefined), undefined),
@@ -680,6 +772,16 @@ make_default_data_handler(State, #{cmd := Cmd} = CallSpec) ->
                                    Sub, Extractors)}
     end.
 
+make_postprocess({collect, _}) ->
+    fun(L) when is_list(L) -> lists:reverse(L) end;
+make_postprocess({flatten, _}) ->
+    fun(L)  when is_list(L) -> iolist_to_binary(lists:reverse(L)) end;
+make_postprocess(_) ->
+    fun(Any) -> Any end.
+
+% Make default exit handler function.
+% It cleanup the state from any items used by the default handlers,
+% and implement the call specification support for handling results and errors.
 make_default_exit_handler(_State, CallSpec) ->
     Cleanup = fun(Sub) ->
         maps:remove(error, maps:remove(result, Sub))
@@ -688,45 +790,49 @@ make_default_exit_handler(_State, CallSpec) ->
         {ok, true} -> true;
         _ -> false
     end,
-    DefaultError = case maps:find(error, CallSpec) of
-        {ok, {default, Default1}} -> Default1;
+    DefaultError = case maps:find(error_default, CallSpec) of
+        {ok, Default1} -> Default1;
         _ -> undefined
     end,
-    {DefaultResult, ReverseResult} = case maps:find(result, CallSpec) of
-        {ok, {default, Default2}} -> {Default2, false};
-        {ok, {collect, _}} -> {undefined, true};
-        _ -> {undefined, false}
+    ProcessErrorFun = make_postprocess(maps:get(error, CallSpec, undefined)),
+    DefaultResult = case maps:find(result_default, CallSpec) of
+        {ok, Default2} -> Default2;
+        _ -> undefined
     end,
-    ProcessResult = case maps:find(keep_result, CallSpec) of
+    ProcessResultFun = make_postprocess(maps:get(result, CallSpec, undefined)),
+    KeepResultFun = case maps:find(keep_result, CallSpec) of
         error -> fun(Sub, Result) -> {ok, Result, Sub} end;
         {ok, Key} -> fun(Sub, Result) -> {ok, Result, Sub#{Key => Result}} end
     end,
     fun
-        (Sub = #{result := Result}, {exit, {status, 0}})
-          when ReverseResult =:= false ->
-            ProcessResult(Cleanup(Sub), Result);
-        (Sub = #{result := Result}, {exit, {status, 0}})
-          when ReverseResult =:= true ->
-            ProcessResult(Cleanup(Sub), lists:reverse(Result));
+        (Sub = #{result := Result}, {exit, {status, 0}}) ->
+            KeepResultFun(Cleanup(Sub), ProcessResultFun(Result));
         (Sub, {exit, {status, 0}}) ->
             case DefaultResult of
                 undefined -> {ok, Cleanup(Sub)};
-                _ -> ProcessResult(Cleanup(Sub), DefaultResult)
+                _ -> KeepResultFun(Cleanup(Sub), DefaultResult)
             end;
         (Sub = #{error := Reason}, _Status)
           when ErrorAsResult =:= true ->
-            ProcessResult(Cleanup(Sub), {error, Reason});
+            KeepResultFun(Cleanup(Sub), {error, ProcessErrorFun(Reason)});
         (Sub = #{error := Reason}, _Status)
           when ErrorAsResult =:= false ->
-            {error, Reason, Cleanup(Sub)};
-        (Sub, Status) ->
+            {error, ProcessErrorFun(Reason), Cleanup(Sub)};
+        (Sub, {exit, Reason})
+          when ErrorAsResult =:= true ->
             case DefaultError of
-                undefined -> {error, Status, Cleanup(Sub)};
+                undefined -> KeepResultFun(Cleanup(Sub), {error, Reason});
+                _ -> KeepResultFun(Cleanup(Sub), {error, DefaultError})
+            end;
+        (Sub, {exit, Reason})
+          when ErrorAsResult =:= false ->
+            case DefaultError of
+                undefined -> {error, Reason, Cleanup(Sub)};
                 _ -> {error, DefaultError, Cleanup(Sub)}
             end
     end.
 
-make_messager_handler(StartHandler, DataHandler, ExitHandler) ->
+make_call_handler(StartHandler, DataHandler, ExitHandler) ->
     fun
         (Sub, _CallSpec, {start, LastResult}) -> StartHandler(Sub, LastResult);
         (Sub, _CallSpec, {stdout, _Data} = Msg) -> DataHandler(Sub, Msg);
@@ -735,6 +841,7 @@ make_messager_handler(StartHandler, DataHandler, ExitHandler) ->
         (Sub, _CallSpec, {message, _Msg}) -> {continue, Sub}
     end.
 
+% Extract re options involved in calling re:compile/2.
 filter_re_compile_options(Opts) ->
     filter_re_compile_options(Opts, []).
 
@@ -753,6 +860,7 @@ filter_re_compile_options([{T, _} = V | Rest], Acc)
 filter_re_compile_options([_ | Rest], Acc) ->
     filter_re_compile_options(Rest, Acc).
 
+% Extract re options involved in calling re:run/3.
 filter_re_run_options(Opts) ->
     filter_re_run_options(Opts, []).
 
@@ -772,6 +880,7 @@ filter_re_run_options([{T, _, _} = V | Rest], Acc)
 filter_re_run_options([_ | Rest], Acc) ->
     filter_re_run_options(Rest, Acc).
 
+% Escape a string to be safely used in a regular expresion.
 escape_regexp(String) when is_binary(String) ->
     EscapedString = unicode:characters_to_list(String),
     escape_regexp(EscapedString);
