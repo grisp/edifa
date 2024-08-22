@@ -6,6 +6,7 @@ Erlang Disk and Image File Abstraction Library
 
     $ rebar3 compile
 
+
 ## Runtime Dependencies
 
 ### MacOS
@@ -18,6 +19,25 @@ Commands that must be available:
  - fdisk
  - diskutil
  - newfs_msdos
+
+
+### Linux
+
+Commands that must be available:
+
+ - id
+ - rm
+ - mktemp
+ - mkdir
+ - dd
+ - sfdisk
+ - fusefat
+ - fusermount
+ - mkfs.vfat
+ 
+Install dependencies:
+
+    sudo apt-get install coreutils fdisk fusefat dosfstools
 
 
 ## Usage
