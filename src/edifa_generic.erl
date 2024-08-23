@@ -77,8 +77,6 @@ extract(_State, _From, _To, _OutputFile) ->
 %--- Helper Command Functions --------------------------------------------------
 
 -spec cmd_cleanup(State :: term()) -> [edifa_exec:call_spec()].
-cmd_cleanup(#{image_filename := Filename}) ->
-    cmd_rm(true, Filename);
 cmd_cleanup(_State) ->
     [].
 

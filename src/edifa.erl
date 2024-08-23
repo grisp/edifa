@@ -233,7 +233,7 @@ extract(#image{pid = Pid}, From, To, OutputFile) ->
         false -> edifa_exec:call(Pid, extract, [From, To, OutputFile])
     end.
 
-%% @doc Closes the previously created image, deleting it.
+%% @doc Closes the previously created image.
 -spec close(image()) -> ok | {error, Reason :: term()}.
 close(#image{pid = Pid}) ->
     edifa_exec:terminate(Pid).
