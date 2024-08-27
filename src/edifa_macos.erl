@@ -15,10 +15,10 @@
 
 -export([create/4]).
 -export([write/3]).
--export([partition/3]).
+-export([partition/4]).
 -export([format/4]).
 -export([mount/3]).
--export([unmount/2]).
+-export([unmount/3]).
 -export([extract/5]).
 
 
@@ -43,9 +43,9 @@ write(State, Filename, Opts) ->
     edifa_generic:write(State, Filename, Opts).
 
 % Suppress the "no local return" warning for the image_partition/3 function
--dialyzer({no_return, partition/3}).
+-dialyzer({no_return, partition/4}).
 
-partition(State, mbr, Specs) ->
+partition(State, mbr, Specs, _Opts) ->
     with_image_device(State, fun(State2, ImageDevice) ->
         PartitionSpecs = format_partition_specs(512, Specs),
         edifa_exec:command(State2, [
@@ -179,7 +179,7 @@ mount(State = #{image_device := ImageDevice, partitions := PartMap},
 mount(_State, _PartId, _Opts) ->
     {error, <<"No partition table defined">>}.
 
-unmount(State = #{partitions := PartMap}, PartId) ->
+unmount(State = #{partitions := PartMap}, PartId, _Opts) ->
     case maps:find(PartId, PartMap) of
         error -> {error, ?FMT("Unknown partition ~s", [PartId])};
         {ok, #{mount_point := undefined}} -> {ok, State};
@@ -197,7 +197,7 @@ unmount(State = #{partitions := PartMap}, PartId) ->
                 end
             ])
     end;
-unmount(_State, _PartId) ->
+unmount(_State, _PartId, _Opts) ->
     {error, <<"No partition table defined">>}.
 
 extract(State, From, To, Filename, Opts) ->

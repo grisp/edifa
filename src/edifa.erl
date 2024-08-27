@@ -6,12 +6,12 @@
 % API Functions
 -export([create/2, create/3]).
 -export([write/3]).
--export([partition/3]).
+-export([partition/3, partition/4]).
 -export([format/4]).
 -export([mount/2, mount/3]).
--export([unmount/2]).
+-export([unmount/2, unmount/3]).
 -export([extract/3, extract/4, extract/5]).
--export([close/1]).
+-export([close/1, close/2]).
 
 
 %--- Types -------------------------------------------------------------------
@@ -23,7 +23,8 @@
     % The maximum size of a block written to the output.
     max_block_size => undefined | pos_integer(),
     temp_dir => undefined | file:filename(),
-    log_handler => undefined | edifa_exec:log_handler()
+    log_handler => undefined | edifa_exec:log_handler(),
+    log_state => term()
 }.
 -type write_options() :: #{
     % The maximum size of a block read from the input or written to the output.
@@ -34,7 +35,9 @@
     % The number of bytes to skip in the input file.
     skip => pos_integer(),
     % The offset in the output file where to start writing.
-    seek => pos_integer()
+    seek => pos_integer(),
+    log_handler => undefined | edifa_exec:log_handler(),
+    log_state => term()
 }.
 -type partition_table() :: mbr.
 -type partition_type() :: fat32.
@@ -47,17 +50,35 @@
 -type partition_specs() :: mbr_partition_specs().
 -type partition_id() :: atom().
 -type partition_filesystem() :: fat.
+-type partition_options() :: #{
+    log_handler => undefined | edifa_exec:log_handler(),
+    log_state => term()
+}.
 -type format_options() :: #{
     identifier => undefined | non_neg_integer(),
     label => undefined | iodata(),
     type => undefined | 12 | 16 | 32,
-    cluster_size => undefined | 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 % Default: 8
+    cluster_size => undefined | 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128, % Default: 8
+    log_handler => undefined | edifa_exec:log_handler(),
+    log_state => term()
 }.
 -type mount_options() :: #{
-    mount_point => undefined | file:filename()
+    mount_point => undefined | file:filename(),
+    log_handler => undefined | edifa_exec:log_handler(),
+    log_state => term()
+}.
+-type unmount_options() :: #{
+    log_handler => undefined | edifa_exec:log_handler(),
+    log_state => term()
 }.
 -type extract_options() :: #{
-    compressed => boolean()
+    compressed => boolean(),
+    log_handler => undefined | edifa_exec:log_handler(),
+    log_state => term()
+}.
+-type close_options() :: #{
+    log_handler => undefined | edifa_exec:log_handler(),
+    log_state => term()
 }.
 
 %--- Macros --------------------------------------------------------------------
@@ -88,10 +109,20 @@ create(Filename, Size) ->
 %%   <li><b>log_handler</b>:
 %%      A function to call with log events.
 %%   </li>
+%%   <li><b>log_handler</b>:
+%%      Either a stateless or stateful anonymous function that will be called
+%%      with all the events happening during the operation. If a stateful
+%%      handler is specified, the function will return the state as an extra
+%%      last tuple element.
+%%   </li>
+%%   <li><b>log_state</b>:
+%%      The state data to use if the log handler is stateful.
+%%   </li>
 %% </ul></p>
 -spec create(Filename :: file:filename() | undefined, Size :: pos_integer(),
              Options :: create_options()) ->
-    {ok, image()} | {error, Reason :: term()}.
+    {ok, image()} | {ok, image(), LogState :: term()}
+  | {error, Reason :: term()} | {error, Reason :: term(), LogState :: term()}.
 create(Filename, Size, Opts) ->
     case Filename =/= undefined andalso filelib:is_file(Filename) of
         true -> {error, ?FMT("Image file ~s already exists", [Filename])};
@@ -121,14 +152,32 @@ create(Filename, Size, Opts) ->
 %%   <li><b>seek</b>:
 %%      The offset in the output file where to start writing.
 %%   </li>
+%%   <li><b>log_handler</b>:
+%%      Either a stateless or stateful anonymous function that will be called
+%%      with all the events happening during the operation. If a stateful
+%%      handler is specified, the function will return the state as an extra
+%%      last tuple element.
+%%   </li>
+%%   <li><b>log_state</b>:
+%%      The state data to use if the log handler is stateful.
+%%   </li>
 %% </ul></p>
 -spec write(image(), file:filename(), write_options()) ->
-    ok | {error, Reason :: term()}.
+    ok | {ok, LogState :: term()}
+  | {error, Reason :: term()} | {error, Reason :: term(), LogState :: term()}.
 write(#image{pid = Pid}, Filename, Opts) ->
     case filelib:is_file(Filename) of
         false -> {error, {not_found, Filename}};
-        true -> edifa_exec:call(Pid, write, [Filename, Opts])
+        true ->
+            {CallOpts, CmdOpts} = split_opts(Opts),
+            edifa_exec:call(Pid, write, [Filename, CmdOpts], CallOpts)
     end.
+
+%% @equiv edifa:partition(Image, PartitionTableType, PartitionSpec, #{})
+-spec partition(image(), partition_table(), partition_specs()) ->
+    {ok, [partition_id()]} | {error, Reason :: term()}.
+partition(Img, PartTable, PartitionSpecs) ->
+    partition(Img, PartTable, PartitionSpecs, #{}).
 
 %% @doc Creates the partition table on a previously created image.
 %% Only supports MBR partitions for now.
@@ -147,16 +196,29 @@ write(#image{pid = Pid}, Filename, Opts) ->
 %%     Required size of the partition. It <b>MUST</b> be a multiple of the
 %%     sector size (512).
 %%   </li>
+%%   <li><b>log_handler</b>:
+%%      Either a stateless or stateful anonymous function that will be called
+%%      with all the events happening during the operation. If a stateful
+%%      handler is specified, the function will return the state as an extra
+%%      last tuple element.
+%%   </li>
+%%   <li><b>log_state</b>:
+%%      The state data to use if the log handler is stateful.
+%%   </li>
 %%  </ul></p>
--spec partition(image(), partition_table(), partition_specs()) ->
-    {ok, [partition_id()]} | {error, Reason :: term()}.
-partition(#image{pid = Pid}, PartTable, PartitionSpecs) ->
+-spec partition(image(), partition_table(), partition_specs(),
+                partition_options()) ->
+    {ok, [partition_id()]} | {ok, [partition_id()], LogState :: term()}
+  | {error, Reason :: term()} | {error, Reason :: term(), LogState :: term()}.
+partition(#image{pid = Pid}, PartTable, PartitionSpecs, Opts) ->
     case PartTable of
         mbr ->
             case validate_mbr_specs(PartitionSpecs) of
                 {error, _Reason} = Error -> Error;
                 {ok, NewSpecs} ->
-                    edifa_exec:call(Pid, partition, [PartTable, NewSpecs])
+                    {CallOpts, CmdOpts} = split_opts(Opts),
+                    edifa_exec:call(Pid, partition,
+                                    [PartTable, NewSpecs, CmdOpts], CallOpts)
             end;
         _ ->
             {error, ?FMT("Unsupported partition table type ~p", [PartTable])}
@@ -179,13 +241,25 @@ partition(#image{pid = Pid}, PartTable, PartitionSpecs) ->
 %%     The number of sector per cluster, must be a power of 2 from 1 to 128
 %%     included. Default is 8.
 %%   </li>
+%%   <li><b>log_handler</b>:
+%%      Either a stateless or stateful anonymous function that will be called
+%%      with all the events happening during the operation. If a stateful
+%%      handler is specified, the function will return the state as an extra
+%%      last tuple element.
+%%   </li>
+%%   <li><b>log_state</b>:
+%%      The state data to use if the log handler is stateful.
+%%   </li>
 %% </ul></p>
 -spec format(image(), partition_id(), partition_filesystem(), format_options()) ->
-    ok | {error, Reason :: term()}.
+    ok | {ok, LogState :: term()}
+  | {error, Reason :: term()} | {error, Reason :: term(), LogState :: term()}.
 format(#image{pid = Pid}, PartId, fat, Opts) when is_atom(PartId) ->
-    case validate_format_options(Opts) of
+    {CallOpts, CmdOpts} = split_opts(Opts),
+    case validate_format_options(CmdOpts) of
         {error, _Reason} = Error -> Error;
-        {ok, Opts2} -> edifa_exec:call(Pid, format, [PartId, fat, Opts2])
+        {ok, CmdOpts2} ->
+            edifa_exec:call(Pid, format, [PartId, fat, CmdOpts2], CallOpts)
     end;
 format(#image{}, _PartId, FileSystem, _Opts) ->
     {error, ?FMT("File system ~p not supported", [FileSystem])}.
@@ -203,24 +277,58 @@ mount(Img, PartId) ->
 %%   <li><b>mount_point</b>:
 %%     An explicit directory path to mount the file system into.
 %%   </li>
+%%   <li><b>log_handler</b>:
+%%      Either a stateless or stateful anonymous function that will be called
+%%      with all the events happening during the operation. If a stateful
+%%      handler is specified, the function will return the state as an extra
+%%      last tuple element.
+%%   </li>
+%%   <li><b>log_state</b>:
+%%      The state data to use if the log handler is stateful.
+%%   </li>
 %% </ul></p>
 -spec mount(image(), partition_id(), mount_options()) ->
-    {ok, MountPoint :: binary()} | {error, Reason :: term()}.
+    {ok, MountPoint :: binary()}
+  | {ok, MountPoint :: binary(), LogState :: term()}
+  | {error, Reason :: term()}
+  | {error, Reason :: term(), LogState :: term()}.
 mount(#image{pid = Pid}, PartId, Opts) ->
-    edifa_exec:call(Pid, mount, [PartId, Opts]).
+    {CallOpts, CmdOpts} = split_opts(Opts),
+    edifa_exec:call(Pid, mount, [PartId, CmdOpts], CallOpts).
+
+%% @equiv edifa:unmount(Image, PartId, #{})
+-spec unmount(image(), partition_id()) -> ok | {error, Reason :: term()}.
+unmount(Img, PartId) ->
+    unmount(Img, PartId, #{}).
 
 %% @doc Unmounts a previously mounted partition.
--spec unmount(image(), partition_id()) -> ok | {error, Reason :: term()}.
-unmount(#image{pid = Pid}, PartId) ->
-    edifa_exec:call(Pid, unmount, [PartId]).
+%% <p>Options:
+%% <ul>
+%%   <li><b>log_handler</b>:
+%%      Either a stateless or stateful anonymous function that will be called
+%%      with all the events happening during the operation. If a stateful
+%%      handler is specified, the function will return the state as an extra
+%%      last tuple element.
+%%   </li>
+%%   <li><b>log_state</b>:
+%%      The state data to use if the log handler is stateful.
+%%   </li>
+%% </ul></p>
+-spec unmount(image(), partition_id(), unmount_options()) ->
+    ok | {ok, LogState :: term()}
+  | {error, Reason :: term()} | {error, Reason :: term(), LogState :: term()}.
+unmount(#image{pid = Pid}, PartId, Opts) ->
+    {CallOpts, CmdOpts} = split_opts(Opts),
+    edifa_exec:call(Pid, unmount, [PartId, CmdOpts], CallOpts).
 
 %% @doc Extracts a partition or the reserved space before the first partition
 %% into the given file. The output file must not already exists.\
 %% @equiv edifa:extract(Image, ParetId, PartId, OutputFile, #{})
 -spec extract(image(), reserved | partition_id(),
-              Filename :: file:filename()) -> ok.
+              Filename :: file:filename()) ->
+    ok | {error, Reason :: term()}.
 extract(Img, PartId, OutputFile) ->
-    extract(Img, PartId, PartId, OutputFile).
+    extract(Img, PartId, PartId, OutputFile, #{}).
 
 -spec extract(image(), From :: reserved | partition_id(),
               To :: reserved | partition_id(), file:filename()) -> ok.
@@ -241,32 +349,60 @@ extract(Img, From, To, OutputFile) ->
 %%     If the output file should be compressed with gzip. If `true', the `.gz`
 %%     extension will be append at the end of the file name. Default: `false'.
 %%   </li>
+%%   <li><b>log_handler</b>:
+%%      Either a stateless or stateful anonymous function that will be called
+%%      with all the events happening during the operation. If a stateful
+%%      handler is specified, the function will return the state as an extra
+%%      last tuple element.
+%%   </li>
+%%   <li><b>log_state</b>:
+%%      The state data to use if the log handler is stateful.
+%%   </li>
 %% </ul></p>
 -spec extract(image(), From :: reserved | partition_id(),
               To :: reserved | partition_id(), file:filename(),
-              extract_options()) -> ok.
+              extract_options()) ->
+    ok | {ok, LogState :: term()}
+  | {error, Reason :: term()} | {error, Reason :: term(), LogState :: term()}.
 extract(#image{pid = Pid}, From, To, OutputFile, Opts) ->
     case filelib:is_file(OutputFile) of
         true -> {error, ?FMT("Output file ~s already exists", [OutputFile])};
-        false -> edifa_exec:call(Pid, extract, [From, To, OutputFile, Opts])
+        false ->
+            {CallOpts, CmdOpts} = split_opts(Opts),
+            edifa_exec:call(Pid, extract,
+                            [From, To, OutputFile, CmdOpts], CallOpts)
     end.
 
-%% @doc Closes the previously created image.
+%% @equiv edifa:close(Image, #{})
 -spec close(image()) -> ok | {error, Reason :: term()}.
-close(#image{pid = Pid}) ->
-    edifa_exec:terminate(Pid).
+close(Img) ->
+    close(Img, #{}).
+
+%% @doc Closes the previously created image.
+-spec close(image(), close_options()) ->
+    ok | {ok, LogState :: term()}
+  | {error, Reason :: term()} | {error, Reason :: term(), LogState :: term()}.
+close(#image{pid = Pid}, Opts) ->
+    edifa_exec:terminate(Pid, Opts).
 
 
 %--- Internal Functions --------------------------------------------------------
+
+split_opts(Opts) ->
+    {maps:with([log_handler, log_state], Opts),
+     maps:without([log_handler, log_state], Opts)}.
 
 create(Filename, Size, CreateOpts, Mod, ModOpts) ->
     case edifa_exec:start(Mod, ModOpts) of
         {error, _Reason} = Error -> Error;
         {ok, Pid} ->
-            Args = [Filename, Size, CreateOpts],
-            case edifa_exec:call(Pid, create, Args) of
+            {CallOpts, CmdOpts} = split_opts(CreateOpts),
+            Args = [Filename, Size, CmdOpts],
+            case edifa_exec:call(Pid, create, Args, CallOpts) of
                 {error, _Reason} = Error -> Error;
-                ok -> {ok, #image{pid = Pid}}
+                {error, _Reason, _LogState} = Error -> Error;
+                ok -> {ok, #image{pid = Pid}};
+                {ok, LogState} -> {ok, #image{pid = Pid}, LogState}
             end
     end.
 

@@ -19,8 +19,8 @@
 
 % API Functions
 -export([start/2]).
--export([call/3]).
--export([terminate/1]).
+-export([call/4]).
+-export([terminate/2]).
 -export([find_executables/2]).
 -export([command/2, command/3]).
 
@@ -41,8 +41,7 @@
     sub :: term(),
     cmd_paths = #{} :: #{atom() => {binary(), binary()}},
     stdout_buffer = <<>> :: binary(),
-    stderr_buffer = <<>> :: binary(),
-    log_handler :: undefined | log_handler()
+    stderr_buffer = <<>> :: binary()
 }).
 -type state() :: #state{}.
 
@@ -60,7 +59,10 @@
                    | command_exit()
                    | {result, term()}
                    | {error, term()}.
--type log_handler() :: fun((log_event()) -> ok).
+-type stateless_log_handler() :: fun((log_event()) -> ok).
+-type statefull_log_handler() :: fun((log_event(), State1 :: term())
+                                      -> State2 :: term()).
+-type log_handler() :: stateless_log_handler() | statefull_log_handler().
 
 -type continue_return() ::
     {continue, NewState :: term()}
@@ -189,20 +191,11 @@ start(Mod, Opts) ->
             {error, timeout}
     end.
 
-call(Pid, Name, Args) ->
-    call_proc(Pid, call, [Name, Args]).
+call(Pid, Name, Args, Opts) ->
+    call_proc(Pid, call, [Name, Args], Opts).
 
-terminate(Pid) ->
-    MonRef = erlang:monitor(process, Pid),
-    Pid ! terminate,
-    receive
-        {'DOWN', MonRef, process, Pid, normal} -> ok;
-        {'DOWN', MonRef, process, Pid, Reason} -> {error, Reason}
-    after
-        5000 ->
-            demonitor(MonRef, [flush]),
-            {error, timeout}
-    end.
+terminate(Pid, Opts) ->
+    terminate_proc(Pid, Opts).
 
 -spec command(term(), atom(), [string() | binary()]) ->
     ok_return() | call_return().
@@ -248,25 +241,115 @@ cmd_name(#state{cmd_paths = Paths}, Tag) ->
     #{Tag := {Name, _}} = Paths,
     Name.
 
-call_proc(Pid, Action, Args) ->
+call_proc(Pid, Action, Args, Opts) ->
     CallRef = make_ref(),
     MonRef = erlang:monitor(process, Pid),
+    LogHandler = maps:get(log_handler, Opts, undefined),
+    LogState = maps:get(log_state, Opts, undefined),
     Pid ! {Action, {CallRef, self()}, Args},
+    wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState).
+
+wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState) ->
     receive
+        {'DOWN', MonRef, process, Pid, Reason}
+          when is_function(LogHandler, 2) ->
+            {error, Reason, LogState};
         {'DOWN', MonRef, process, Pid, Reason} ->
             {error, Reason};
+        {log, Event}
+          when is_function(LogHandler, 1) ->
+            try LogHandler(Event) of
+                _ ->
+                    wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState)
+            catch
+                C:R:S ->
+                    Pid ! terminate,
+                    erlang:raise(C, R, S)
+            end;
+        {log, Event}
+          when is_function(LogHandler, 2) ->
+            try LogHandler(Event, LogState) of
+                LogState2 ->
+                    wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState2)
+            catch
+                C:R:S ->
+                    Pid ! terminate,
+                    erlang:raise(C, R, S)
+            end;
+        {log, _Event} ->
+            wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState);
+        {CallRef, ok}
+          when is_function(LogHandler, 2)->
+            demonitor(MonRef, [flush]),
+            {ok, LogState};
+        {CallRef, {OkOrError, ResultOrReason}}
+          when is_function(LogHandler, 2)->
+            demonitor(MonRef, [flush]),
+            {OkOrError, ResultOrReason, LogState};
         {CallRef, Result} ->
             demonitor(MonRef, [flush]),
             Result
     after
         5000 ->
             demonitor(MonRef, [flush]),
-            {error, timeout}
+            case is_function(LogHandler, 2) of
+                true -> {error, timeout, LogState};
+                false -> {error, timeout}
+            end
+    end.
+
+terminate_proc(Pid, Opts) ->
+    MonRef = erlang:monitor(process, Pid),
+    LogHandler = maps:get(log_handler, Opts, undefined),
+    LogState = maps:get(log_state, Opts, undefined),
+    Pid ! terminate,
+    wait_term_reply(Pid, MonRef, LogHandler, LogState).
+
+wait_term_reply(Pid, MonRef, LogHandler, LogState) ->
+    receive
+        {'DOWN', MonRef, process, Pid, normal}
+          when is_function(LogHandler, 2) ->
+            {ok, LogState};
+        {'DOWN', MonRef, process, Pid, normal} ->
+            ok;
+        {'DOWN', MonRef, process, Pid, Reason}
+          when is_function(LogHandler, 2) ->
+            {error, Reason, LogState};
+        {'DOWN', MonRef, process, Pid, Reason} ->
+            {error, Reason};
+        {log, Event}
+          when is_function(LogHandler, 1) ->
+            try LogHandler(Event) of
+                _ ->
+                    wait_term_reply(Pid, MonRef, LogHandler, LogState)
+            catch
+                C:R:S ->
+                    Pid ! terminate,
+                    erlang:raise(C, R, S)
+            end;
+        {log, Event}
+          when is_function(LogHandler, 2) ->
+            try LogHandler(Event, LogState) of
+                LogState2 ->
+                    wait_term_reply(Pid, MonRef, LogHandler, LogState2)
+            catch
+                C:R:S ->
+                    Pid ! terminate,
+                    erlang:raise(C, R, S)
+            end;
+        {log, _Event} ->
+            wait_term_reply(Pid, MonRef, LogHandler, LogState)
+    after
+        5000 ->
+            demonitor(MonRef, [flush]),
+            case is_function(LogHandler, 2) of
+                true -> {error, timeout, LogState};
+                false -> {error, timeout}
+            end
     end.
 
 proc_init(Parent, Ref, Mod, Opts) ->
     process_flag(trap_exit, true),
-    LogHandler = maps:get(log_handler, Opts, undefined),
     case exec:start_link([]) of
         {error, Reason} ->
             Parent ! {Ref, self(), {error, Reason}};
@@ -281,7 +364,6 @@ proc_init(Parent, Ref, Mod, Opts) ->
                             Parent ! {Ref, self(), {error, Reason}};
                         {ok, CmdPaths} ->
                             State = #state{parent = Parent, exec_pid = ExecPid,
-                                           log_handler = LogHandler,
                                            mod = Mod, sub = Sub,
                                            cmd_paths = CmdPaths},
                             Parent ! {Ref, self(), ok},
@@ -307,16 +389,16 @@ proc_loop(#state{mod = Mod, sub = Sub, parent = Parent} = State) ->
     end.
 
 proc_reply({CallRef, Pid}, State, {error, Reason, NewSub}) ->
-    Pid ! {CallRef, {error, Reason}},
+    Pid ! {CallRef, reply, {error, Reason}},
     proc_loop(State#state{sub = NewSub});
 proc_reply({CallRef, Pid}, State, {error, Reason}) ->
-    Pid ! {CallRef, {error, Reason}},
+    Pid ! {CallRef, reply, {error, Reason}},
     proc_loop(State);
 proc_reply({CallRef, Pid}, State, {ok, NewSub}) ->
-    Pid ! {CallRef, ok},
+    Pid ! {CallRef, reply, ok},
     proc_loop(State#state{sub = NewSub});
 proc_reply({CallRef, Pid}, State, {ok, Reply, NewSub}) ->
-    Pid ! {CallRef, {ok, Reply}},
+    Pid ! {CallRef, reply, {ok, Reply}},
     proc_loop(State#state{sub = NewSub});
 proc_reply({CallRef, Pid}, State, {call, CallSpecs, LastResult, NewSub}) ->
     case proc_command(State#state{sub = NewSub}, CallSpecs, LastResult) of
@@ -526,9 +608,10 @@ proc_cmd_close_consume(State, {Pid, OsPid} = CallRef) ->
             proc_log(State3, proc_cmd_status(Reason))
     end.
 
-proc_log(#state{log_handler = undefined} = State, _Data) -> State;
-proc_log(#state{log_handler = LogHandler} = State, Data) ->
-    catch LogHandler(Data),
+proc_log(State, {start, _}) ->
+    State;
+proc_log(#state{parent = Parent} = State, Event) ->
+    Parent ! {log, Event},
     State.
 
 % Start a call specification or a handler. If the handler is a simple handler

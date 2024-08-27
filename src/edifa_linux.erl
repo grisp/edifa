@@ -9,10 +9,10 @@
 
 -export([create/4]).
 -export([write/3]).
--export([partition/3]).
+-export([partition/4]).
 -export([format/4]).
 -export([mount/3]).
--export([unmount/2]).
+-export([unmount/3]).
 -export([extract/5]).
 
 
@@ -38,7 +38,7 @@ create(State, Filename, Size, Opts) ->
 write(State, Filename, Opts) ->
     edifa_generic:write(State, Filename, Opts).
 
-partition(State = #{image_filename := ImageFilename}, mbr, Specs) ->
+partition(State = #{image_filename := ImageFilename}, mbr, Specs, _Opts) ->
     PartitionSpecs = format_partition_specs(512, Specs),
     edifa_exec:command(State, [
         #{
@@ -71,7 +71,7 @@ partition(State = #{image_filename := ImageFilename}, mbr, Specs) ->
             end)
         end
     ]);
-partition(_State, mbr, _Specs) ->
+partition(_State, mbr, _Specs, _Opts) ->
     {error, <<"No image created">>}.
 
 format(State = #{image_filename := ImageFile, partitions := PartMap},
@@ -159,7 +159,7 @@ mount(_State, _PartId, _Opts) ->
     {error, <<"No partition table defined">>}.
 
 unmount(State = #{image_filename := ImageFile, partitions := PartMap},
-        PartId) ->
+        PartId, _Opts) ->
     case maps:find(PartId, PartMap) of
         error -> {error, ?FMT("Unknown partition ~s", [PartId])};
         {ok, #{mount_point := undefined}} -> {ok, State};
@@ -179,7 +179,7 @@ unmount(State = #{image_filename := ImageFile, partitions := PartMap},
                 ])
             end)
     end;
-unmount(_State, _PartId) ->
+unmount(_State, _PartId, _Opts) ->
     {error, <<"No partition table defined">>}.
 
 extract(State, From, To, Filename, Opts) ->
