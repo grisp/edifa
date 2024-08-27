@@ -7,13 +7,17 @@
 -export([init/1]).
 -export([create/4]).
 -export([write/3]).
--export([extract/4]).
+-export([extract/5]).
 
 % Helper command functions
 -export([cmd_cleanup/1]).
 -export([cmd_mkdir/1]).
 -export([cmd_rm/2, cmd_rm/3]).
 -export([cmd_dd/3]).
+
+% Helper context functions
+-export([with_temp_dir/2]).
+
 
 %--- Types ---------------------------------------------------------------------
 
@@ -35,11 +39,17 @@
 
 %--- API Functions -------------------------------------------------------------
 
-init(_Opts) ->
-    {ok, #{}, [rm, mkdir, dd]}.
+init(Opts) ->
+    {ok, #{temp_dir => maps:get(temp_dir, Opts, undefined)},
+        [rm, mv, mkdir, mktemp, dd, gzip]}.
 
 create(#{image_filename := CurrFilename}, _Filename, _Size, _Opts) ->
     {error, ?FMT("Image file already created: ~s", [CurrFilename])};
+create(State, undefined, Size, Opts) ->
+    with_temp_dir(State, fun(State2, TempDir) ->
+        ImageFile = filename:join(TempDir, "data.img"),
+        create(State2, ImageFile, Size, Opts)
+    end);
 create(State, Filename, Size, Opts) ->
     FilenameBin = iolist_to_binary(Filename),
     MaxBlockSize = maps:get(max_block_size, Opts, ?MAX_BLOCK_SIZE),
@@ -60,25 +70,44 @@ write(#{image_filename := OutFilename} = State, InFilename, Opts) ->
 write(_State, _InFilename, _Opts) ->
     {error, <<"No image file created">>}.
 
-extract(#{image_filename := InFilename} = State, From, To, OutFilename) ->
+extract(#{image_filename := InFilename} = State, From, To, OutFilename, Opts) ->
+    BinOutFilename = iolist_to_binary(OutFilename),
+    {Compress, OutputFile, CompressedFile, FinalOutput}
+        = case maps:find(compressed, Opts) of
+            {ok, true} ->
+                {true, <<BinOutFilename/binary, ".tmp">>,
+                       <<BinOutFilename/binary, ".tmp.gz">>,
+                       BinOutFilename};
+            _ ->
+                {false, BinOutFilename, BinOutFilename, BinOutFilename}
+        end,
     case extract_block(State, From, To) of
         {error, _Reason} = Error -> Error;
         {ok, Start, Size} ->
-            Opts = #{skip => Start, count => Size},
+            DdOpts = #{skip => Start, count => Size},
             edifa_exec:command(State, [
-                cmd_mkdir(filename:dirname(OutFilename)),
-                cmd_dd(InFilename, OutFilename, Opts)
+                cmd_mkdir(filename:dirname(OutputFile)),
+                cmd_dd(InFilename, OutputFile, DdOpts),
+                fun
+                    (State2, _) when Compress =:= false ->
+                        {ok, State2};
+                    (State2, _) when Compress =:= true ->
+                        edifa_exec:command(State2, [
+                            #{cmd => gzip, args => ["-S", ".gz", OutputFile]},
+                            #{cmd => mv, args => [CompressedFile, FinalOutput]}
+                        ])
+                end
             ])
     end;
-extract(_State, _From, _To, _OutputFile) ->
+extract(_State, _From, _To, _OutputFile, _Opts) ->
     {error, <<"No image file created">>}.
 
 
 %--- Helper Command Functions --------------------------------------------------
 
 -spec cmd_cleanup(State :: term()) -> [edifa_exec:call_spec()].
-cmd_cleanup(_State) ->
-    [].
+cmd_cleanup(State) ->
+    cmd_cleanup_temp_dir(State).
 
 -spec cmd_mkdir(DirPath :: string() | binary()) ->
     [edifa_exec:call_spec()].
@@ -120,7 +149,40 @@ cmd_dd(From, To, Opts) ->
             ] ++ dd_block_opts(Opts)
     }].
 
+
+%--- Helper Context Functions --------------------------------------------------
+
+with_temp_dir(State = #{temp_dir := undefined}, Fun) ->
+    edifa_exec:command(State, [
+        #{cmd => mktemp, args => ["-d"], result => {collect, stdout}},
+        fun(State2, Output) ->
+            OutputStr = unicode:characters_to_list(Output),
+            DirStr = string:strip(OutputStr, right, $\n),
+            case filelib:is_dir(DirStr) of
+                false ->
+                    {error, ?FMT("Temporary directory not found: ~s",
+                                 [OutputStr])};
+                true ->
+                    DirBin = iolist_to_binary(DirStr),
+                    State3 = State2#{
+                        temp_dir => DirBin,
+                        temp_dir_cleanup => true
+                    },
+                    {ok, DirBin, State3}
+            end
+        end,
+        Fun
+    ]);
+with_temp_dir(State = #{temp_dir := TempDir}, Fun) ->
+    Fun(State, TempDir).
+
+
 %--- Internal Functions --------------------------------------------------------
+
+cmd_cleanup_temp_dir(#{temp_dir_cleanup := true, temp_dir := TempDir}) ->
+    edifa_generic:cmd_rm(true, true, TempDir);
+cmd_cleanup_temp_dir(_State) ->
+    [].
 
 gcd(A, B) when B > A -> gcd(B, A);
 gcd(A, B) when A rem B > 0 -> gcd(B, A rem B);

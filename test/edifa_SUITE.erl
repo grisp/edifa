@@ -149,9 +149,8 @@ mount_and_unmount_test(Config) ->
 
 extract_test(Config) ->
     TmpDir = proplists:get_value(tmp_dir, Config),
-    ImgFile = proplists:get_value(img_file, Config),
     ImgOpts = proplists:get_value(img_opts, Config),
-    {ok, Img} = edifa:create(ImgFile, 17?MiB, ImgOpts),
+    {ok, Img} = edifa:create(undefined, 17?MiB, ImgOpts),
     {ok, [P1, P2, P3, P4]} = edifa:partition(Img, mbr, [
         #{type => fat32, start => 1?MiB, size => 4?MiB},
         #{type => fat32, start => 1?MiB, size => 4?MiB},
@@ -168,7 +167,7 @@ extract_test(Config) ->
     ok = edifa:unmount(Img, P1),
     % Extract Paritition 1
     P1Filename = filename:join(TmpDir, "p1.bin"),
-    ok = edifa:extract(Img, P1, P1Filename),
+    ok  = edifa:extract(Img, P1, P1Filename),
     ?assert(filelib:is_file(P1Filename)),
     ?assertEqual(4?MiB, filelib:file_size(P1Filename)),
     % Write Parition 1 into parition 2
@@ -183,7 +182,12 @@ extract_test(Config) ->
     ok = edifa:unmount(Img, P2),
     % Extract partition 1 to 2
     P1P2Filename = filename:join(TmpDir, "p1-p2.bin"),
-    ok = edifa:extract(Img, P1, P2, P1P2Filename),
+    P1P2FilenameGz = P1P2Filename ++ ".gz",
+    ok = edifa:extract(Img, P1, P2, P1P2FilenameGz, #{compressed => true}),
+    ?assertNot(filelib:is_file(P1P2Filename)),
+    ?assert(filelib:is_file(P1P2FilenameGz)),
+    ?assert(filelib:file_size(P1P2FilenameGz) < 8?MiB),
+    os:cmd("gunzip " ++ P1P2FilenameGz),
     ?assert(filelib:is_file(P1P2Filename)),
     ?assertEqual(8?MiB, filelib:file_size(P1P2Filename)),
     % Write Parition 1 and 2 into parition 3 and 4

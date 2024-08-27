@@ -17,8 +17,11 @@ Library to create system images without root privilege on both Linux and MacOS.
 Commands that must be available:
 
  - rm
+ - mv
  - mkdir
  - dd
+ - mktemp
+ - gzip
  - hdiutil
  - fdisk
  - diskutil
@@ -30,10 +33,12 @@ Commands that must be available:
 Commands that must be available:
 
  - rm
+ - mv
  - mkdir
  - dd
- - id
  - mktemp
+ - gzip
+ - id
  - sfdisk
  - fusefat
  - fusermount
@@ -41,7 +46,7 @@ Commands that must be available:
  
 Install dependencies:
 
-    sudo apt-get install coreutils fdisk fusefat dosfstools
+    sudo apt-get install coreutils fdisk fusefat dosfstools gzip
 
 
 ## Usage
@@ -104,10 +109,17 @@ partition with the bootloader and the partition definition, and partition 1:
 ok = edifa:extract(Img, reserved, P1, "disk.img").
 ```
 
+Extract into a gziped file:
+
+
 Close the image:
 
 ```erlang
 ok = edifa:close(Img).
+```
+
+```erlang
+ok = edifa:extract(Img, P2, P2, "system.fs.gz").
 ```
 
 

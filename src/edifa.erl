@@ -10,7 +10,7 @@
 -export([format/4]).
 -export([mount/2, mount/3]).
 -export([unmount/2]).
--export([extract/3, extract/4]).
+-export([extract/3, extract/4, extract/5]).
 -export([close/1]).
 
 
@@ -56,7 +56,9 @@
 -type mount_options() :: #{
     mount_point => undefined | file:filename()
 }.
-
+-type extract_options() :: #{
+    compressed => boolean()
+}.
 
 %--- Macros --------------------------------------------------------------------
 
@@ -73,7 +75,8 @@ create(Filename, Size) ->
     create(Filename, Size, #{}).
 
 %% @doc Creates an image of give size in bytes with given options.
-%% The file must not already exists.
+%% The file must not already exists. If the image file is `undefined',
+%% a temporary file will be created and deleted at the end.
 %% <p>Options:
 %% <ul>
 %%   <li><b>max_block_size</b>:
@@ -86,11 +89,11 @@ create(Filename, Size) ->
 %%      A function to call with log events.
 %%   </li>
 %% </ul></p>
--spec create(Filename :: file:filename(), Size :: pos_integer(),
+-spec create(Filename :: file:filename() | undefined, Size :: pos_integer(),
              Options :: create_options()) ->
     {ok, image()} | {error, Reason :: term()}.
 create(Filename, Size, Opts) ->
-    case filelib:is_file(Filename) of
+    case Filename =/= undefined andalso filelib:is_file(Filename) of
         true -> {error, ?FMT("Image file ~s already exists", [Filename])};
         false ->
             case os:type() of
@@ -212,11 +215,18 @@ unmount(#image{pid = Pid}, PartId) ->
     edifa_exec:call(Pid, unmount, [PartId]).
 
 %% @doc Extracts a partition or the reserved space before the first partition
-%% into the given file. The output file must not already exists.
+%% into the given file. The output file must not already exists.\
+%% @equiv edifa:extract(Image, ParetId, PartId, OutputFile, #{})
 -spec extract(image(), reserved | partition_id(),
               Filename :: file:filename()) -> ok.
 extract(Img, PartId, OutputFile) ->
     extract(Img, PartId, PartId, OutputFile).
+
+-spec extract(image(), From :: reserved | partition_id(),
+              To :: reserved | partition_id(), file:filename()) -> ok.
+%% @equiv edifa:extract(Image, From, To, OutputFile, #{})
+extract(Img, From, To, OutputFile) ->
+    extract(Img, From, To, OutputFile, #{}).
 
 %% @doc Extracts a range of partition that may include the reserved space before
 %% the first partition into the given file. Both paritions are included in the
@@ -225,12 +235,20 @@ extract(Img, PartId, OutputFile) ->
 %% The output file must not already exists.
 %% All the paritions involved <b>MUST NOT</b> be mounted, otherwise the
 %% extracted data mya not be up-to-date.
+%% <p>Options:
+%% <ul>
+%%   <li><b>compressed</b>:
+%%     If the output file should be compressed with gzip. If `true', the `.gz`
+%%     extension will be append at the end of the file name. Default: `false'.
+%%   </li>
+%% </ul></p>
 -spec extract(image(), From :: reserved | partition_id(),
-              To :: reserved | partition_id(), file:filename()) -> ok.
-extract(#image{pid = Pid}, From, To, OutputFile) ->
+              To :: reserved | partition_id(), file:filename(),
+              extract_options()) -> ok.
+extract(#image{pid = Pid}, From, To, OutputFile, Opts) ->
     case filelib:is_file(OutputFile) of
         true -> {error, ?FMT("Output file ~s already exists", [OutputFile])};
-        false -> edifa_exec:call(Pid, extract, [From, To, OutputFile])
+        false -> edifa_exec:call(Pid, extract, [From, To, OutputFile, Opts])
     end.
 
 %% @doc Closes the previously created image.

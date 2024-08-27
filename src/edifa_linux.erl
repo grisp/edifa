@@ -13,7 +13,7 @@
 -export([format/4]).
 -export([mount/3]).
 -export([unmount/2]).
--export([extract/4]).
+-export([extract/5]).
 
 
 %--- Macros --------------------------------------------------------------------
@@ -25,8 +25,8 @@
 
 init(Opts) ->
     {ok, State, Commands} = edifa_generic:init(Opts),
-    {ok, State#{temp_dir => maps:get(temp_dir, Opts, undefined)},
-        [id, mktemp, sfdisk, fusefat, fusermount, {mkvfat, "mkfs.vfat"}
+    {ok, State,
+        [id, sfdisk, fusefat, fusermount, {mkvfat, "mkfs.vfat"}
          | Commands]}.
 
 terminate(State, _Reason) ->
@@ -47,7 +47,7 @@ partition(State = #{image_filename := ImageFilename}, mbr, Specs) ->
             input => [PartitionSpecs, eof]
         },
         fun(State2, _) ->
-            with_temp_dir(State2, fun(State3, TempDir) ->
+            edifa_generic:with_temp_dir(State2, fun(State3, TempDir) ->
                 BaseName = filename:basename(ImageFilename),
                 {_, RevIds, PartMap} = lists:foldl(fun(Spec, {Idx, Ids, Map}) ->
                     Name = <<"p", (integer_to_binary(Idx))/binary>>,
@@ -182,15 +182,14 @@ unmount(State = #{image_filename := ImageFile, partitions := PartMap},
 unmount(_State, _PartId) ->
     {error, <<"No partition table defined">>}.
 
-extract(State, From, To, Filename) ->
-    edifa_generic:extract(State, From, To, Filename).
+extract(State, From, To, Filename, Opts) ->
+    edifa_generic:extract(State, From, To, Filename, Opts).
 
 
 %--- Internal Functions --------------------------------------------------------
 
 cmd_cleanup(State) ->
     cmd_cleanup_partitions(State)
-        ++ cmd_cleanup_temp_dir(State)
         ++ edifa_generic:cmd_cleanup(State).
 
 cmd_cleanup_partitions(#{partitions := PartMap}) ->
@@ -210,35 +209,6 @@ cmd_cleanup_partitions([#{filepath := F} | Rest], Acc)
     cmd_cleanup_partitions(Rest, [edifa_generic:cmd_rm(true, F) | Acc]);
 cmd_cleanup_partitions([#{} | Rest], Acc) ->
     cmd_cleanup_partitions(Rest, Acc).
-
-cmd_cleanup_temp_dir(#{temp_dir_cleanup := true, temp_dir := TempDir}) ->
-    [edifa_generic:cmd_rm(true, true, TempDir)];
-cmd_cleanup_temp_dir(_State) ->
-    [].
-
-with_temp_dir(State = #{temp_dir := undefined}, Fun) ->
-    edifa_exec:command(State, [
-        #{cmd => mktemp, args => ["-d"], result => {collect, stdout}},
-        fun(State2, Output) ->
-            OutputStr = unicode:characters_to_list(Output),
-            DirStr = string:strip(OutputStr, right, $\n),
-            case filelib:is_dir(DirStr) of
-                false ->
-                    {error, ?FMT("Temporary directory not found: ~s",
-                                 [OutputStr])};
-                true ->
-                    DirBin = iolist_to_binary(DirStr),
-                    State3 = State2#{
-                        temp_dir => DirBin,
-                        temp_dir_cleanup => true
-                    },
-                    {ok, DirBin, State3}
-            end
-        end,
-        Fun
-    ]);
-with_temp_dir(State = #{temp_dir := TempDir}, Fun) ->
-    Fun(State, TempDir).
 
 with_user_ids(State = #{user_id := UId, groups_id := GId}, Fun)
   when is_integer(UId), is_integer(GId) ->

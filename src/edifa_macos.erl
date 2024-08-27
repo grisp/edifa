@@ -19,7 +19,7 @@
 -export([format/4]).
 -export([mount/3]).
 -export([unmount/2]).
--export([extract/4]).
+-export([extract/5]).
 
 
 %--- Macros --------------------------------------------------------------------
@@ -200,8 +200,8 @@ unmount(State = #{partitions := PartMap}, PartId) ->
 unmount(_State, _PartId) ->
     {error, <<"No partition table defined">>}.
 
-extract(State, From, To, Filename) ->
-    edifa_generic:extract(State, From, To, Filename).
+extract(State, From, To, Filename, Opts) ->
+    edifa_generic:extract(State, From, To, Filename, Opts).
 
 
 %--- Internal Functions --------------------------------------------------------
