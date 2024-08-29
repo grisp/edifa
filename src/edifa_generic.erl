@@ -197,7 +197,8 @@ block_size(Indexes, MaxSize) ->
 max_divisor(Value, Div) when (Value rem Div) =:= 0 -> Div;
 max_divisor(Value, Div) -> max_divisor(Value, Div - 1).
 
-dd_block_opts(Opts = #{count := Count, seek := Seek, skip := Skip}) ->
+dd_block_opts(Opts = #{count := Count, seek := Seek, skip := Skip})
+  when Seek =/= 0, Skip =/= 0 ->
     MaxBlockSize = maps:get(max_block_size, Opts, ?MAX_BLOCK_SIZE),
     OutputBlockSize = block_size([Seek], MaxBlockSize),
     InputBlockSize = block_size([Count, Skip], MaxBlockSize),
@@ -206,7 +207,8 @@ dd_block_opts(Opts = #{count := Count, seek := Seek, skip := Skip}) ->
      "skip=" ++ integer_to_list(Skip div InputBlockSize),
      "seek=" ++ integer_to_list(Seek div OutputBlockSize),
      "count=" ++ integer_to_list(Count div InputBlockSize)];
-dd_block_opts(Opts = #{count := Count, seek := Seek}) ->
+dd_block_opts(Opts = #{count := Count, seek := Seek})
+  when Seek =/= 0 ->
     MaxBlockSize = maps:get(max_block_size, Opts, ?MAX_BLOCK_SIZE),
     OutputBlockSize = block_size([Seek], MaxBlockSize),
     InputBlockSize = block_size([Count], MaxBlockSize),
@@ -214,7 +216,8 @@ dd_block_opts(Opts = #{count := Count, seek := Seek}) ->
      "ibs=" ++ integer_to_list(InputBlockSize),
      "seek=" ++ integer_to_list(Seek div OutputBlockSize),
      "count=" ++ integer_to_list(Count div InputBlockSize)];
-dd_block_opts(Opts = #{count := Count, skip := Skip}) ->
+dd_block_opts(Opts = #{count := Count, skip := Skip})
+  when Skip =/= 0 ->
     MaxBlockSize = maps:get(max_block_size, Opts, ?MAX_BLOCK_SIZE),
     OutputBlockSize = MaxBlockSize,
     InputBlockSize = block_size([Count, Skip], MaxBlockSize),
@@ -222,7 +225,8 @@ dd_block_opts(Opts = #{count := Count, skip := Skip}) ->
      "ibs=" ++ integer_to_list(InputBlockSize),
      "skip=" ++ integer_to_list(Skip div InputBlockSize),
      "count=" ++ integer_to_list(Count div InputBlockSize)];
-dd_block_opts(Opts = #{seek := Seek, skip := Skip}) ->
+dd_block_opts(Opts = #{seek := Seek, skip := Skip})
+  when Seek =/= 0, Skip =/= 0 ->
     MaxBlockSize = maps:get(max_block_size, Opts, ?MAX_BLOCK_SIZE),
     OutputBlockSize = block_size([Seek], MaxBlockSize),
     InputBlockSize = block_size([Skip], MaxBlockSize),
@@ -235,14 +239,16 @@ dd_block_opts(Opts = #{count := Count}) ->
     BlockSize = block_size([Count], MaxBlockSize),
     ["bs=" ++ integer_to_list(BlockSize),
      "count=" ++ integer_to_list(Count div BlockSize)];
-dd_block_opts(Opts = #{seek := Seek}) ->
+dd_block_opts(Opts = #{seek := Seek})
+  when Seek =/= 0 ->
     MaxBlockSize = maps:get(max_block_size, Opts, ?MAX_BLOCK_SIZE),
     OutputBlockSize = block_size([Seek], MaxBlockSize),
     InputBlockSize = MaxBlockSize,
     ["obs=" ++ integer_to_list(OutputBlockSize),
      "ibs=" ++ integer_to_list(InputBlockSize),
      "seek=" ++ integer_to_list(Seek div OutputBlockSize)];
-dd_block_opts(Opts = #{skip := Skip}) ->
+dd_block_opts(Opts = #{skip := Skip})
+  when Skip =/= 0 ->
     MaxBlockSize = maps:get(max_block_size, Opts, ?MAX_BLOCK_SIZE),
     OutputBlockSize = MaxBlockSize,
     InputBlockSize = block_size([Skip], MaxBlockSize),
