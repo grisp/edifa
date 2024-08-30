@@ -1,14 +1,25 @@
-{application, edifa,
- [{description, "Erlang Disk and Image File Abstraction Library"},
-  {vsn, "0.1.0"},
-  {registered, []},
-  {applications,
-   [kernel,
-    stdlib
-   ]},
-  {env,[]},
-  {modules, []},
+{application, edifa, [
+    {description, "Erlang Disk and Image File Abstraction Library"},
+    {vsn, "1.0.0"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib
+    ]},
+    {env,[]},
+    {modules, []},
 
-  {licenses, ["Apache 2.0"]},
-  {links, []}
+    {licenses, ["Apache-2.0"]},
+    {links, [
+        {"Homepage", "https://www.grisp.org"},
+        {"Changelog", "https://github.com/grisp/edifa/blob/main/CHANGELOG.md"},
+        {"GitHub", "https://github.com/grisp/edifa"}
+    ]},
+    {files, [
+        "LICENSE",
+        "README.md",
+        "rebar.*",
+        "rebar.lock",
+        "src"
+    ]}
  ]}.

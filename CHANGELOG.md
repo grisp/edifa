@@ -7,4 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-[Unreleased]: https://github.com/grisp/grisp/compare/2223dedbaf812b6ac88389868ed3f33ade2dcc02...HEAD
+## [1.0.0] - 2024-08-30
+
+First release
+
+
+[Unreleased]: https://github.com/grisp/edifa/compare/1.0.0...HEAD
+[1.0.0]: https://github.com/grisp/edifa/compare/2223dedbaf812b6ac88389868ed3f33ade2dcc02...1.0.0
