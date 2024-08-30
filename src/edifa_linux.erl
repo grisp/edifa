@@ -66,7 +66,7 @@ partition(State = #{image_filename := ImageFilename}, mbr, Specs, _Opts) ->
                     {Idx + 1, [Id | Ids], Map#{Id => Spec2}}
                 end, {1, [], #{}}, Specs),
                 PartIds = lists:reverse(RevIds),
-                State4 = State3#{paritions_ids => PartIds, partitions => PartMap},
+                State4 = State3#{partition_ids => PartIds, partitions => PartMap},
                 {ok, PartIds, State4}
             end)
         end
