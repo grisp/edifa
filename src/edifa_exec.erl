@@ -23,6 +23,7 @@
 -export([terminate/2]).
 -export([find_executables/2]).
 -export([command/2, command/3]).
+-export([log/1]).
 
 
 %--- Macros --------------------------------------------------------------------
@@ -187,7 +188,7 @@ start(Mod, Opts) ->
     after
         5000 ->
             erlang:unlink(Pid),
-            Pid ! terminate,
+            Pid ! {?MODULE, terminate},
             {error, timeout}
     end.
 
@@ -210,6 +211,11 @@ command(State, CmdSpec) when is_map(CmdSpec) ->
     {call, [CmdSpec], undefined, State};
 command(State, CmdSpecs) when is_list(CmdSpecs) ->
     {call, lists:flatten(CmdSpecs), undefined, State}.
+
+-spec log(term()) -> ok.
+log(Event) ->
+    self() ! {?MODULE, log, Event},
+    ok.
 
 
 %--- Internal Functions --------------------------------------------------------
@@ -257,7 +263,7 @@ wait_call_reply(Pid, CallRef, MonRef, Timeout, LogHandler, LogState) ->
             {error, Reason, LogState};
         {'DOWN', MonRef, process, Pid, Reason} ->
             {error, Reason};
-        {log, Event}
+        {?MODULE, log, Event}
           when is_function(LogHandler, 1) ->
             try LogHandler(Event) of
                 _ ->
@@ -265,10 +271,10 @@ wait_call_reply(Pid, CallRef, MonRef, Timeout, LogHandler, LogState) ->
                                     LogHandler, LogState)
             catch
                 C:R:S ->
-                    Pid ! terminate,
+                    Pid ! {?MODULE, terminate},
                     erlang:raise(C, R, S)
             end;
-        {log, Event}
+        {?MODULE, log, Event}
           when is_function(LogHandler, 2) ->
             try LogHandler(Event, LogState) of
                 LogState2 ->
@@ -276,10 +282,10 @@ wait_call_reply(Pid, CallRef, MonRef, Timeout, LogHandler, LogState) ->
                                     LogHandler, LogState2)
             catch
                 C:R:S ->
-                    Pid ! terminate,
+                    Pid ! {?MODULE, terminate},
                     erlang:raise(C, R, S)
             end;
-        {log, _Event} ->
+        {?MODULE, log, _Event} ->
             wait_call_reply(Pid, CallRef, MonRef, Timeout,
                             LogHandler, LogState);
         {CallRef, ok}
@@ -307,7 +313,7 @@ terminate_proc(Pid, Opts) ->
     Timeout = maps:get(timeout, Opts, 5000),
     LogHandler = maps:get(log_handler, Opts, undefined),
     LogState = maps:get(log_state, Opts, undefined),
-    Pid ! terminate,
+    Pid ! {?MODULE, terminate},
     wait_term_reply(Pid, MonRef, Timeout, LogHandler, LogState).
 
 wait_term_reply(Pid, MonRef, Timeout, LogHandler, LogState) ->
@@ -322,27 +328,27 @@ wait_term_reply(Pid, MonRef, Timeout, LogHandler, LogState) ->
             {error, Reason, LogState};
         {'DOWN', MonRef, process, Pid, Reason} ->
             {error, Reason};
-        {log, Event}
+        {?MODULE, log, Event}
           when is_function(LogHandler, 1) ->
             try LogHandler(Event) of
                 _ ->
                     wait_term_reply(Pid, MonRef, Timeout, LogHandler, LogState)
             catch
                 C:R:S ->
-                    Pid ! terminate,
+                    Pid ! {?MODULE, terminate},
                     erlang:raise(C, R, S)
             end;
-        {log, Event}
+        {?MODULE, log, Event}
           when is_function(LogHandler, 2) ->
             try LogHandler(Event, LogState) of
                 LogState2 ->
                     wait_term_reply(Pid, MonRef, Timeout, LogHandler, LogState2)
             catch
                 C:R:S ->
-                    Pid ! terminate,
+                    Pid ! {?MODULE, terminate},
                     erlang:raise(C, R, S)
             end;
-        {log, _Event} ->
+        {?MODULE, log, _Event} ->
             wait_term_reply(Pid, MonRef, Timeout, LogHandler, LogState)
     after
         Timeout ->
@@ -389,7 +395,9 @@ proc_loop(#state{mod = Mod, sub = Sub, parent = Parent} = State) ->
             catch
                 throw:Reason -> proc_reply(Caller, State, {error, Reason})
             end;
-        terminate ->
+        {?MODULE, log, Event} ->
+            proc_loop(proc_log(State, Event));
+        {?MODULE, terminate} ->
             proc_terminate(State, normal)
     end.
 
@@ -610,13 +618,15 @@ proc_cmd_close_consume(State, {Pid, OsPid} = CallRef) ->
             State3 = lists:foldl(fun(Event, S) ->
                 proc_log(S, Event)
             end, State2, Events),
-            proc_log(State3, proc_cmd_status(Reason))
+            proc_log(State3, proc_cmd_status(Reason));
+        {?MODULE, log, Event} ->
+            proc_cmd_close_consume(proc_log(State, Event), CallRef)
     end.
 
 proc_log(State, {start, _}) ->
     State;
 proc_log(#state{parent = Parent} = State, Event) ->
-    Parent ! {log, Event},
+    Parent ! {?MODULE, log, Event},
     State.
 
 % Start a call specification or a handler. If the handler is a simple handler
@@ -710,7 +720,7 @@ proc_command_consume(#state{terminating = Terminating, parent = Parent} = State,
     receive
         {'EXIT', Parent, Reason} when not Terminating ->
             proc_terminate(proc_cmd_close(State, CallRef), Reason);
-        terminate when not Terminating ->
+        {?MODULE, terminate} when not Terminating ->
             proc_terminate(proc_cmd_close(State, CallRef), normal);
         {'DOWN', OsPid, process, Pid, Reason} ->
             {DataEvents, State2} = flush_stream_data(State),
@@ -722,6 +732,9 @@ proc_command_consume(#state{terminating = Terminating, parent = Parent} = State,
             {DataEvents, State2} = split_stream_data(State, Stream, Data),
             proc_command_consume(State2, CallSpec, CallRef, Handler,
                                  NextCalls, DataEvents);
+        {?MODULE, log, Event} ->
+            proc_command_consume(proc_log(State, Event), CallSpec, CallRef,
+                                 Handler, NextCalls, []);
         OtherMsg ->
             proc_call_result_handler(State, CallSpec, CallRef,
                                      Handler, NextCalls, [],
