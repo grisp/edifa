@@ -87,12 +87,14 @@ extract(#{image_filename := InFilename} = State, From, To, OutFilename, Opts) ->
             DdOpts = #{skip => Start, count => Size},
             edifa_exec:command(State, [
                 cmd_mkdir(filename:dirname(OutputFile)),
+                cmd_rm(true, OutputFile),
                 cmd_dd(InFilename, OutputFile, DdOpts),
                 fun
                     (State2, _) when Compress =:= false ->
                         {ok, State2};
                     (State2, _) when Compress =:= true ->
                         edifa_exec:command(State2, [
+                            cmd_rm(true, CompressedFile),
                             #{cmd => gzip, args => ["-S", ".gz", OutputFile]},
                             #{cmd => mv, args => [CompressedFile, FinalOutput]}
                         ])
