@@ -244,12 +244,13 @@ cmd_name(#state{cmd_paths = Paths}, Tag) ->
 call_proc(Pid, Action, Args, Opts) ->
     CallRef = make_ref(),
     MonRef = erlang:monitor(process, Pid),
+    Timeout = maps:get(timeout, Opts, 5000),
     LogHandler = maps:get(log_handler, Opts, undefined),
     LogState = maps:get(log_state, Opts, undefined),
     Pid ! {Action, {CallRef, self()}, Args},
-    wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState).
+    wait_call_reply(Pid, CallRef, MonRef, Timeout, LogHandler, LogState).
 
-wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState) ->
+wait_call_reply(Pid, CallRef, MonRef, Timeout, LogHandler, LogState) ->
     receive
         {'DOWN', MonRef, process, Pid, Reason}
           when is_function(LogHandler, 2) ->
@@ -260,7 +261,8 @@ wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState) ->
           when is_function(LogHandler, 1) ->
             try LogHandler(Event) of
                 _ ->
-                    wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState)
+                    wait_call_reply(Pid, CallRef, MonRef, Timeout,
+                                    LogHandler, LogState)
             catch
                 C:R:S ->
                     Pid ! terminate,
@@ -270,14 +272,16 @@ wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState) ->
           when is_function(LogHandler, 2) ->
             try LogHandler(Event, LogState) of
                 LogState2 ->
-                    wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState2)
+                    wait_call_reply(Pid, CallRef, MonRef, Timeout,
+                                    LogHandler, LogState2)
             catch
                 C:R:S ->
                     Pid ! terminate,
                     erlang:raise(C, R, S)
             end;
         {log, _Event} ->
-            wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState);
+            wait_call_reply(Pid, CallRef, MonRef, Timeout,
+                            LogHandler, LogState);
         {CallRef, ok}
           when is_function(LogHandler, 2)->
             demonitor(MonRef, [flush]),
@@ -290,7 +294,7 @@ wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState) ->
             demonitor(MonRef, [flush]),
             Result
     after
-        5000 ->
+        Timeout ->
             demonitor(MonRef, [flush]),
             case is_function(LogHandler, 2) of
                 true -> {error, timeout, LogState};
@@ -300,12 +304,13 @@ wait_call_reply(Pid, CallRef, MonRef, LogHandler, LogState) ->
 
 terminate_proc(Pid, Opts) ->
     MonRef = erlang:monitor(process, Pid),
+    Timeout = maps:get(timeout, Opts, 5000),
     LogHandler = maps:get(log_handler, Opts, undefined),
     LogState = maps:get(log_state, Opts, undefined),
     Pid ! terminate,
-    wait_term_reply(Pid, MonRef, LogHandler, LogState).
+    wait_term_reply(Pid, MonRef, Timeout, LogHandler, LogState).
 
-wait_term_reply(Pid, MonRef, LogHandler, LogState) ->
+wait_term_reply(Pid, MonRef, Timeout, LogHandler, LogState) ->
     receive
         {'DOWN', MonRef, process, Pid, normal}
           when is_function(LogHandler, 2) ->
@@ -321,7 +326,7 @@ wait_term_reply(Pid, MonRef, LogHandler, LogState) ->
           when is_function(LogHandler, 1) ->
             try LogHandler(Event) of
                 _ ->
-                    wait_term_reply(Pid, MonRef, LogHandler, LogState)
+                    wait_term_reply(Pid, MonRef, Timeout, LogHandler, LogState)
             catch
                 C:R:S ->
                     Pid ! terminate,
@@ -331,16 +336,16 @@ wait_term_reply(Pid, MonRef, LogHandler, LogState) ->
           when is_function(LogHandler, 2) ->
             try LogHandler(Event, LogState) of
                 LogState2 ->
-                    wait_term_reply(Pid, MonRef, LogHandler, LogState2)
+                    wait_term_reply(Pid, MonRef, Timeout, LogHandler, LogState2)
             catch
                 C:R:S ->
                     Pid ! terminate,
                     erlang:raise(C, R, S)
             end;
         {log, _Event} ->
-            wait_term_reply(Pid, MonRef, LogHandler, LogState)
+            wait_term_reply(Pid, MonRef, Timeout, LogHandler, LogState)
     after
-        5000 ->
+        Timeout ->
             demonitor(MonRef, [flush]),
             case is_function(LogHandler, 2) of
                 true -> {error, timeout, LogState};

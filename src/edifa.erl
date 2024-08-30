@@ -37,7 +37,8 @@
     % The offset in the output file where to start writing.
     seek => pos_integer(),
     log_handler => undefined | edifa_exec:log_handler(),
-    log_state => term()
+    log_state => term(),
+    timeout => pos_integer() | infinity % Default: 5000
 }.
 -type partition_table() :: mbr.
 -type partition_type() :: fat32.
@@ -52,7 +53,8 @@
 -type partition_filesystem() :: fat.
 -type partition_options() :: #{
     log_handler => undefined | edifa_exec:log_handler(),
-    log_state => term()
+    log_state => term(),
+    timeout => pos_integer() | infinity % Default: 5000
 }.
 -type format_options() :: #{
     identifier => undefined | non_neg_integer(),
@@ -60,25 +62,30 @@
     type => undefined | 12 | 16 | 32,
     cluster_size => undefined | 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128, % Default: 8
     log_handler => undefined | edifa_exec:log_handler(),
-    log_state => term()
+    log_state => term(),
+    timeout => pos_integer() | infinity % Default: 5000
 }.
 -type mount_options() :: #{
     mount_point => undefined | file:filename(),
     log_handler => undefined | edifa_exec:log_handler(),
-    log_state => term()
+    log_state => term(),
+    timeout => pos_integer() | infinity % Default: 5000
 }.
 -type unmount_options() :: #{
     log_handler => undefined | edifa_exec:log_handler(),
-    log_state => term()
+    log_state => term(),
+    timeout => pos_integer() | infinity % Default: 5000
 }.
 -type extract_options() :: #{
     compressed => boolean(),
     log_handler => undefined | edifa_exec:log_handler(),
-    log_state => term()
+    log_state => term(),
+    timeout => pos_integer() | infinity % Default: 5000
 }.
 -type close_options() :: #{
     log_handler => undefined | edifa_exec:log_handler(),
-    log_state => term()
+    log_state => term(),
+    timeout => pos_integer() | infinity % Default: 5000
 }.
 
 %--- Macros --------------------------------------------------------------------
@@ -117,6 +124,9 @@ create(Filename, Size) ->
 %%   </li>
 %%   <li><b>log_state</b>:
 %%      The state data to use if the log handler is stateful.
+%%   </li>
+%%   <li><b>timeout</b>:
+%%      The maximum time the command is allowed to run without any IO.
 %%   </li>
 %% </ul></p>
 -spec create(Filename :: file:filename() | undefined, Size :: pos_integer(),
@@ -161,6 +171,9 @@ create(Filename, Size, Opts) ->
 %%   <li><b>log_state</b>:
 %%      The state data to use if the log handler is stateful.
 %%   </li>
+%%   <li><b>timeout</b>:
+%%      The maximum time the command is allowed to run without any IO.
+%%   </li>
 %% </ul></p>
 -spec write(image(), file:filename(), write_options()) ->
     ok | {ok, LogState :: term()}
@@ -204,6 +217,9 @@ partition(Img, PartTable, PartitionSpecs) ->
 %%   </li>
 %%   <li><b>log_state</b>:
 %%      The state data to use if the log handler is stateful.
+%%   </li>
+%%   <li><b>timeout</b>:
+%%      The maximum time the command is allowed to run without any IO.
 %%   </li>
 %%  </ul></p>
 -spec partition(image(), partition_table(), partition_specs(),
@@ -250,6 +266,9 @@ partition(#image{pid = Pid}, PartTable, PartitionSpecs, Opts) ->
 %%   <li><b>log_state</b>:
 %%      The state data to use if the log handler is stateful.
 %%   </li>
+%%   <li><b>timeout</b>:
+%%      The maximum time the command is allowed to run without any IO.
+%%   </li>
 %% </ul></p>
 -spec format(image(), partition_id(), partition_filesystem(), format_options()) ->
     ok | {ok, LogState :: term()}
@@ -286,6 +305,9 @@ mount(Img, PartId) ->
 %%   <li><b>log_state</b>:
 %%      The state data to use if the log handler is stateful.
 %%   </li>
+%%   <li><b>timeout</b>:
+%%      The maximum time the command is allowed to run without any IO.
+%%   </li>
 %% </ul></p>
 -spec mount(image(), partition_id(), mount_options()) ->
     {ok, MountPoint :: binary()}
@@ -312,6 +334,9 @@ unmount(Img, PartId) ->
 %%   </li>
 %%   <li><b>log_state</b>:
 %%      The state data to use if the log handler is stateful.
+%%   </li>
+%%   <li><b>timeout</b>:
+%%      The maximum time the command is allowed to run without any IO.
 %%   </li>
 %% </ul></p>
 -spec unmount(image(), partition_id(), unmount_options()) ->
@@ -358,6 +383,9 @@ extract(Img, From, To, OutputFile) ->
 %%   <li><b>log_state</b>:
 %%      The state data to use if the log handler is stateful.
 %%   </li>
+%%   <li><b>timeout</b>:
+%%      The maximum time the command is allowed to run without any IO.
+%%   </li>
 %% </ul></p>
 -spec extract(image(), From :: reserved | partition_id(),
               To :: reserved | partition_id(), file:filename(),
@@ -389,8 +417,8 @@ close(#image{pid = Pid}, Opts) ->
 %--- Internal Functions --------------------------------------------------------
 
 split_opts(Opts) ->
-    {maps:with([log_handler, log_state], Opts),
-     maps:without([log_handler, log_state], Opts)}.
+    {maps:with([log_handler, log_state, timeout], Opts),
+     maps:without([log_handler, log_state, timeout], Opts)}.
 
 create(Filename, Size, CreateOpts, Mod, ModOpts) ->
     case edifa_exec:start(Mod, ModOpts) of
