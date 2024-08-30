@@ -394,16 +394,16 @@ proc_loop(#state{mod = Mod, sub = Sub, parent = Parent} = State) ->
     end.
 
 proc_reply({CallRef, Pid}, State, {error, Reason, NewSub}) ->
-    Pid ! {CallRef, reply, {error, Reason}},
+    Pid ! {CallRef, {error, Reason}},
     proc_loop(State#state{sub = NewSub});
 proc_reply({CallRef, Pid}, State, {error, Reason}) ->
-    Pid ! {CallRef, reply, {error, Reason}},
+    Pid ! {CallRef, {error, Reason}},
     proc_loop(State);
 proc_reply({CallRef, Pid}, State, {ok, NewSub}) ->
-    Pid ! {CallRef, reply, ok},
+    Pid ! {CallRef, ok},
     proc_loop(State#state{sub = NewSub});
 proc_reply({CallRef, Pid}, State, {ok, Reply, NewSub}) ->
-    Pid ! {CallRef, reply, {ok, Reply}},
+    Pid ! {CallRef, {ok, Reply}},
     proc_loop(State#state{sub = NewSub});
 proc_reply({CallRef, Pid}, State, {call, CallSpecs, LastResult, NewSub}) ->
     case proc_command(State#state{sub = NewSub}, CallSpecs, LastResult) of
