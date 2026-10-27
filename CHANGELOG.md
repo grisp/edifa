@@ -7,10 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-27
+
+### Changed
+
+- Update erlexec to 2.5.0 to replace the retired dependency version.
+- Require Erlang/OTP 27 or newer and a C++17 compiler to build erlexec.
+
 ## [1.0.0] - 2024-08-30
 
 First release
 
 
-[Unreleased]: https://github.com/grisp/edifa/compare/1.0.0...HEAD
+[Unreleased]: https://github.com/grisp/edifa/compare/1.0.1...HEAD
+[1.0.1]: https://github.com/grisp/edifa/compare/1.0.0...1.0.1
 [1.0.0]: https://github.com/grisp/edifa/compare/2223dedbaf812b6ac88389868ed3f33ade2dcc02...1.0.0

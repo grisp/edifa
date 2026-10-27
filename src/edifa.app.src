@@ -1,6 +1,6 @@
 {application, edifa, [
     {description, "Erlang Disk and Image File Abstraction Library"},
-    {vsn, "1.0.0"},
+    {vsn, "1.0.1"},
     {registered, []},
     {applications, [
         kernel,
