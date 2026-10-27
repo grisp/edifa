@@ -1,8 +1,8 @@
 {"1.2.0",
-[{<<"erlexec">>,{pkg,<<"erlexec">>,<<"2.0.7">>},0}]}.
+[{<<"erlexec">>,{pkg,<<"erlexec">>,<<"2.5.0">>},0}]}.
 [
 {pkg_hash,[
- {<<"erlexec">>, <<"76D0BC7487929741B5BB9F74DA2AF5DAF1492134733CF9A05C7AAA278B6934C5">>}]},
+ {<<"erlexec">>, <<"A0C603F3903421DB16D6A4F49862F4CB7431D1AA17B4B3D7F3F5E2FE20905121">>}]},
 {pkg_hash_ext,[
- {<<"erlexec">>, <<"AF2DD940BB8E32F5AA40A65CB455DCAA18F5334FD3507E9BFD14A021E9630897">>}]}
+ {<<"erlexec">>, <<"B24FF24C5FC084248F3498CA96F739DAF820F3DB02D9BA1006AB127DE14B7215">>}]}
 ].
