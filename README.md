@@ -7,6 +7,9 @@ Library to create system images without root privilege on both Linux and MacOS.
 
 ## Build
 
+Requires Erlang/OTP 27 or newer, Rebar3, Make, and a C++17 compiler to build
+the erlexec dependency.
+
     $ rebar3 compile
 
 
